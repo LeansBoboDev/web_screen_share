@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>web_screen_share</title>
+    <meta name="description" content="Compartilhamento de tela sem senha: entre, compartilhe e assista." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f7cff'/%3E%3Cpath d='M9 12h14v9H9z' fill='none' stroke='white' stroke-width='2'/%3E%3Cpath d='M13 25l3-4 4 4z' fill='white'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/css/styles.css" />
+  </head>
+  <body>
+    <!-- ============================ TELA DE ENTRADA ============================ -->
+    <section id="landing" class="landing">
+      <div class="landing__card">
+        <div class="brand">
+          <span class="brand__mark" aria-hidden="true"></span>
+          web_screen_share
+        </div>
+
+        <h1 class="landing__title">Compartilhe sua tela em segundos</h1>
+        <p class="landing__subtitle">
+          Sem senha, sem cadastro. Escolha um nome, clique em compartilhar e quem estiver na sala
+          ve a sua tela na hora.
+        </p>
+
+        <label class="field">
+          <span class="field__label">Seu nome</span>
+          <input id="name-input" class="field__input" type="text" maxlength="40" placeholder="Como voce aparece para os outros?" autocomplete="nickname" />
+        </label>
+
+        <div class="landing__actions">
+          <button id="btn-share" class="btn btn--primary" type="button">
+            <span aria-hidden="true">&#128250;</span> Compartilhar minha tela
+          </button>
+          <button id="btn-watch" class="btn btn--ghost" type="button">
+            <span aria-hidden="true">&#128065;</span> Apenas assistir
+          </button>
+        </div>
+
+        <div class="roombar">
+          <label class="field field--compact">
+            <span class="field__label">Sala</span>
+            <input id="room-input" class="field__input" type="text" maxlength="32" placeholder="principal" autocomplete="off" />
+          </label>
+          <button id="btn-new-room" class="btn btn--small btn--ghost" type="button">Gerar sala</button>
+          <button id="btn-copy-link" class="btn btn--small btn--ghost" type="button">Copiar link</button>
+        </div>
+
+        <div id="landing-alert" class="alert" hidden></div>
+
+        <details class="landing__extra">
+          <summary>Opcoes de captura</summary>
+          <label class="check">
+            <input id="chk-audio" type="checkbox" checked />
+            <span>Incluir audio do sistema/aba (quando o navegador permitir)</span>
+          </label>
+          <label class="check">
+            <input id="chk-mic" type="checkbox" />
+            <span>Incluir microfone</span>
+          </label>
+          <p class="hint">
+            O audio do sistema so existe ao compartilhar uma aba ou janela no Chrome/Edge. O
+            microfone e opcional e pode ser ligado depois.
+          </p>
+        </details>
+
+        <p class="landing__note">
+          Dica de uso: no Chrome, ao escolher a aba, marque <strong>Compartilhar audio da aba</strong>.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================================ SALA ================================ -->
+    <main id="room" class="room" hidden>
+      <header class="topbar">
+        <div class="brand brand--small">
+          <span class="brand__mark" aria-hidden="true"></span>
+          web_screen_share
+        </div>
+
+        <div class="topbar__center">
+          <span id="status-pill" class="pill pill--idle">Conectando...</span>
+          <span id="room-label" class="topbar__room">sala: principal</span>
+        </div>
+
+        <div class="topbar__right">
+          <span id="peer-count" class="topbar__meta">1 pessoa</span>
+          <button id="btn-copy-link-2" class="btn btn--small btn--ghost" type="button">Copiar link</button>
+          <button id="btn-leave" class="btn btn--small btn--ghost" type="button">Sair</button>
+        </div>
+      </header>
+
+      <section class="stage">
+        <div class="stage__main">
+          <div id="video-wrap" class="video-wrap">
+            <video id="video" playsinline autoplay></video>
+
+            <div id="placeholder" class="placeholder">
+              <div class="placeholder__spinner" aria-hidden="true"></div>
+              <p id="placeholder-title">Conectando a sala...</p>
+              <p id="placeholder-text">Aguardando alguem compartilhar a tela.</p>
+            </div>
+
+            <div class="overlay-bar" id="overlay-bar" hidden>
+              <span id="overlay-live" class="live-badge">AO VIVO</span>
+              <span id="overlay-name" class="overlay-name"></span>
+              <span id="overlay-res" class="overlay-res"></span>
+            </div>
+
+            <button id="btn-play-overlay" class="play-overlay" type="button" hidden>
+              <span aria-hidden="true">&#9654;</span> Clique para reproduzir
+            </button>
+          </div>
+
+          <div class="stage__footer">
+            <div id="broadcast-panel" class="panel panel--inline" hidden>
+              <span class="panel__title">Voce esta compartilhando</span>
+              <div class="panel__row">
+                <label class="check check--inline">
+                  <input id="ctl-mic" type="checkbox" />
+                  <span>Microfone</span>
+                </label>
+                <label class="check check--inline">
+                  <input id="ctl-audio" type="checkbox" disabled />
+                  <span>Audio do sistema</span>
+                </label>
+                <button id="btn-change-source" class="btn btn--small btn--ghost" type="button">Trocar fonte</button>
+                <button id="btn-stop-share" class="btn btn--small btn--danger" type="button">Parar compartilhamento</button>
+              </div>
+            </div>
+
+            <div id="watch-panel" class="panel panel--inline" hidden>
+              <span class="panel__title">Visualizando</span>
+              <div class="panel__row">
+                <button id="btn-share-2" class="btn btn--small btn--primary" type="button">Compartilhar minha tela</button>
+                <button id="btn-snapshot" class="btn btn--small btn--ghost" type="button">Capturar imagem</button>
+                <button id="btn-fullscreen" class="btn btn--small btn--ghost" type="button">Tela cheia</button>
+              </div>
+            </div>
+
+            <dl id="stats" class="stats"></dl>
+          </div>
+        </div>
+
+        <aside class="stage__side">
+          <div class="panel panel--peers">
+            <h2 class="panel__title">Pessoas <span id="peer-badge" class="badge">1</span></h2>
+            <ul id="peer-list" class="peers"></ul>
+          </div>
+
+          <div class="panel panel--chat">
+            <h2 class="panel__title">Chat</h2>
+            <ul id="chat-list" class="chat"></ul>
+            <form id="chat-form" class="chat__form" autocomplete="off">
+              <input id="chat-input" class="chat__input" type="text" maxlength="500" placeholder="Escreva uma mensagem..." />
+              <button class="btn btn--small btn--primary" type="submit">Enviar</button>
+            </form>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,686 @@
+import { Net } from './net.js';
+import { Streamer } from './streamer.js';
+import { Player } from './player.js';
+
+const $ = (id) => document.getElementById(id);
+
+const el = {
+  landing: $('landing'),
+  landingAlert: $('landing-alert'),
+  nameInput: $('name-input'),
+  roomInput: $('room-input'),
+  chkAudio: $('chk-audio'),
+  chkMic: $('chk-mic'),
+  btnShare: $('btn-share'),
+  btnShare2: $('btn-share-2'),
+  btnWatch: $('btn-watch'),
+  btnNewRoom: $('btn-new-room'),
+  btnCopyLink: $('btn-copy-link'),
+  btnCopyLink2: $('btn-copy-link-2'),
+
+  room: $('room'),
+  statusPill: $('status-pill'),
+  roomLabel: $('room-label'),
+  peerCount: $('peer-count'),
+  btnLeave: $('btn-leave'),
+
+  videoWrap: $('video-wrap'),
+  video: $('video'),
+  placeholder: $('placeholder'),
+  placeholderTitle: $('placeholder-title'),
+  placeholderText: $('placeholder-text'),
+  overlayBar: $('overlay-bar'),
+  overlayName: $('overlay-name'),
+  overlayRes: $('overlay-res'),
+  btnPlayOverlay: $('btn-play-overlay'),
+
+  broadcastPanel: $('broadcast-panel'),
+  ctlMic: $('ctl-mic'),
+  ctlAudio: $('ctl-audio'),
+  btnChangeSource: $('btn-change-source'),
+  btnStopShare: $('btn-stop-share'),
+
+  watchPanel: $('watch-panel'),
+  btnSnapshot: $('btn-snapshot'),
+  btnFullscreen: $('btn-fullscreen'),
+
+  stats: $('stats'),
+  peerBadge: $('peer-badge'),
+  peerList: $('peer-list'),
+  chatList: $('chat-list'),
+  chatForm: $('chat-form'),
+  chatInput: $('chat-input'),
+};
+
+const net = new Net();
+const streamer = new Streamer();
+const player = new Player(el.video);
+
+const state = {
+  name: '',
+  room: 'principal',
+  role: 'viewer',
+  selfId: null,
+  peers: new Map(),
+  broadcaster: null,
+  epoch: null,
+  mimeType: null,
+  announced: false,
+  waitingInit: false,
+  selfStopped: false,
+  lastBytes: 0,
+  lastSample: performance.now(),
+};
+
+// ------------------------------------------------------------------ salas
+
+const ROOM_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+function sanitizeRoom(value) {
+  const clean = String(value ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .slice(0, 32);
+  return ROOM_PATTERN.test(clean) ? clean : 'principal';
+}
+
+function randomRoom() {
+  const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let out = '';
+  for (let i = 0; i < 6; i += 1) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
+function roomUrl() {
+  const url = new URL(location.href);
+  url.searchParams.set('room', state.room);
+  return url.toString();
+}
+
+function setRoom(value) {
+  state.room = sanitizeRoom(value);
+  el.roomInput.value = state.room;
+  el.roomLabel.textContent = `sala: ${state.room}`;
+  const url = new URL(location.href);
+  url.searchParams.set('room', state.room);
+  history.replaceState(null, '', url);
+}
+
+async function copyLink() {
+  const url = roomUrl();
+  try {
+    await navigator.clipboard.writeText(url);
+    flash('Link copiado!');
+  } catch {
+    const helper = document.createElement('textarea');
+    helper.value = url;
+    document.body.appendChild(helper);
+    helper.select();
+    document.execCommand('copy');
+    helper.remove();
+    flash('Link copiado!');
+  }
+}
+
+// ------------------------------------------------------------------- UI
+
+function flash(text) {
+  const item = document.createElement('li');
+  item.className = 'chat--sys';
+  item.textContent = text;
+  el.chatList.appendChild(item);
+  el.chatList.scrollTop = el.chatList.scrollHeight;
+}
+
+function landingError(message) {
+  el.landingAlert.hidden = false;
+  el.landingAlert.textContent = message;
+}
+
+function clearLandingError() {
+  el.landingAlert.hidden = true;
+  el.landingAlert.textContent = '';
+}
+
+function setStatus(text, kind = 'idle') {
+  el.statusPill.textContent = text;
+  el.statusPill.className = `pill pill--${kind}`;
+}
+
+function setPlaceholder(title, text) {
+  el.placeholder.hidden = false;
+  el.placeholderTitle.textContent = title;
+  el.placeholderText.textContent = text;
+  el.videoWrap.classList.remove('has-video');
+}
+
+function showVideo() {
+  el.placeholder.hidden = true;
+  el.videoWrap.classList.add('has-video');
+}
+
+function renderPeers() {
+  const list = [...state.peers.values()].sort((a, b) => {
+    if (a.id === state.broadcaster?.id) return -1;
+    if (b.id === state.broadcaster?.id) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  el.peerList.replaceChildren();
+  for (const peer of list) {
+    const li = document.createElement('li');
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    if (peer.id === state.broadcaster?.id) dot.classList.add('dot--live');
+    else if (peer.id === state.selfId) dot.classList.add('dot--me');
+
+    const name = document.createElement('strong');
+    name.textContent = peer.id === state.selfId ? `${peer.name} (voce)` : peer.name;
+
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = peer.id === state.broadcaster?.id ? 'compartilhando' : '';
+
+    li.append(dot, name, tag);
+    el.peerList.appendChild(li);
+  }
+
+  const count = list.length;
+  el.peerCount.textContent = `${count} ${count === 1 ? 'pessoa' : 'pessoas'}`;
+  el.peerBadge.textContent = String(count);
+}
+
+function renderRole() {
+  const broadcasting = state.role === 'broadcaster';
+  el.broadcastPanel.hidden = !broadcasting;
+  el.watchPanel.hidden = broadcasting;
+}
+
+// ------------------------------------------------------------------ entrada
+
+async function enterAsBroadcaster() {
+  const name = el.nameInput.value.trim();
+  if (!name) {
+    landingError('Digite um nome para entrar na sala.');
+    el.nameInput.focus();
+    return;
+  }
+  clearLandingError();
+
+  try {
+    // Precisa acontecer dentro do gesto do usuario (seletor do navegador).
+    await streamer.open({
+      wantAudio: el.chkAudio.checked,
+      wantMic: el.chkMic.checked,
+    });
+  } catch (err) {
+    if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
+      landingError('Compartilhamento cancelado.');
+    } else {
+      landingError(err?.message ?? 'Nao foi possivel acessar a tela.');
+    }
+    return;
+  }
+
+  streamer.setSystemAudio(el.chkAudio.checked && Boolean(streamer.systemTrack));
+  state.role = 'broadcaster';
+  state.name = name;
+  setRoom(el.roomInput.value);
+  openRoom();
+  beginBroadcast();
+}
+
+/**
+ * Assume a transmissao a partir de dentro da sala (quem ja estava
+ * assistindo tambem pode passar a compartilhar a tela).
+ */
+async function shareFromRoom() {
+  if (state.role === 'broadcaster') return;
+  try {
+    await streamer.open({
+      wantAudio: el.chkAudio.checked,
+      wantMic: el.chkMic.checked,
+    });
+  } catch (err) {
+    flash(
+      err?.name === 'NotAllowedError' || err?.name === 'AbortError'
+        ? 'Compartilhamento cancelado.'
+        : `Nao foi possivel acessar a tela: ${err?.message ?? 'erro desconhecido'}`
+    );
+    return;
+  }
+
+  streamer.setSystemAudio(el.chkAudio.checked && Boolean(streamer.systemTrack));
+  state.role = 'broadcaster';
+  state.selfStopped = false;
+  player.clear(); // deixa de exibir a transmissao que estava assistindo
+  renderRole();
+  beginBroadcast();
+}
+
+function enterAsViewer() {
+  const name = el.nameInput.value.trim();
+  if (!name) {
+    landingError('Digite um nome para entrar na sala.');
+    el.nameInput.focus();
+    return;
+  }
+  clearLandingError();
+  state.role = 'viewer';
+  state.name = name;
+  setRoom(el.roomInput.value);
+  openRoom();
+}
+
+function openRoom() {
+  el.landing.hidden = true;
+  el.room.hidden = false;
+  setStatus('Conectando...', 'idle');
+  setPlaceholder('Conectando a sala...', 'Estabelecendo conexao com o servidor.');
+  renderRole();
+  net.connect();
+}
+
+function leaveRoom() {
+  streamer.stop();
+  player.clear();
+  net.close();
+  state.role = 'viewer';
+  state.announced = false;
+  state.selfStopped = false;
+  state.waitingInit = false;
+  state.peers.clear();
+  state.broadcaster = null;
+  state.selfId = null;
+  state.epoch = null;
+  state.mimeType = null;
+  el.room.hidden = true;
+  el.landing.hidden = false;
+  setStatus('Conectando...', 'idle');
+}
+
+// -------------------------------------------------------------- transmissao
+
+function announceBroadcast() {
+  if (state.announced || !streamer.mimeType) return;
+  if (net.state !== 'online') return;
+  net.send({ type: 'start', mimeType: streamer.mimeType });
+  state.announced = true;
+}
+
+/**
+ * Anuncia a transmissao e garante que o gravador esteja rodando.
+ * A ordem importa: o 'start' precisa chegar ao servidor antes do
+ * primeiro chunk da gravacao.
+ */
+function beginBroadcast() {
+  if (net.state !== 'online') return;
+  announceBroadcast();
+  if (streamer.isRecording) streamer.restart();
+  else streamer.startRecording();
+}
+
+function notifyRestart() {
+  net.send({ type: 'restart', mimeType: streamer.mimeType });
+}
+
+function stopSharing() {
+  streamer.stop();
+  net.send({ type: 'stop' });
+  state.role = 'viewer';
+  state.announced = false;
+  state.broadcaster = null;
+  state.selfStopped = true;
+  state.waitingInit = false;
+  player.clear();
+  renderRole();
+  renderPeers();
+  setPlaceholder('Voce parou de compartilhar', 'Aguardando outro transmissor.');
+  setStatus('Conectado', 'ok');
+}
+
+async function changeSource() {
+  try {
+    await streamer.open({
+      wantAudio: el.chkAudio.checked,
+      wantMic: el.chkMic.checked,
+    });
+  } catch (err) {
+    flash(err?.name === 'NotAllowedError' ? 'Troca de fonte cancelada.' : `Troca de fonte falhou: ${err?.message}`);
+    return;
+  }
+  streamer.setSystemAudio(el.chkAudio.checked && Boolean(streamer.systemTrack));
+  el.ctlAudio.checked = streamer.systemTrack ? el.chkAudio.checked : false;
+  el.ctlAudio.disabled = !streamer.systemTrack;
+
+  // A nova epoch precisa ser enviada ANTES do primeiro chunk novo.
+  notifyRestart();
+  streamer.startRecording();
+  flash('Fonte da tela trocada.');
+}
+
+// ------------------------------------------------------------------- chat
+
+el.chatForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = el.chatInput.value.trim();
+  if (!text) return;
+  net.send({ type: 'chat', text });
+  el.chatInput.value = '';
+});
+
+// -------------------------------------------------------------- eventos UI
+
+el.btnShare.addEventListener('click', enterAsBroadcaster);
+el.btnShare2.addEventListener('click', shareFromRoom);
+el.btnWatch.addEventListener('click', enterAsViewer);
+el.btnNewRoom.addEventListener('click', () => {
+  el.roomInput.value = randomRoom();
+  setRoom(el.roomInput.value);
+});
+el.btnCopyLink.addEventListener('click', copyLink);
+el.btnCopyLink2.addEventListener('click', copyLink);
+el.btnLeave.addEventListener('click', leaveRoom);
+el.nameInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') enterAsViewer();
+});
+el.roomInput.addEventListener('change', () => setRoom(el.roomInput.value));
+
+el.btnStopShare.addEventListener('click', stopSharing);
+el.btnChangeSource.addEventListener('click', changeSource);
+
+el.ctlMic.addEventListener('change', async () => {
+  if (state.role !== 'broadcaster') return;
+  if (el.ctlMic.checked) {
+    const hadAudio = streamer.hasAudioTrack();
+    try {
+      await streamer.enableMic();
+    } catch {
+      el.ctlMic.checked = false;
+      flash('Nao foi possivel acessar o microfone.');
+      return;
+    }
+    if (!hadAudio) {
+      // A track de audio entrou depois: o gravador precisa ser refeito.
+      streamer.restart();
+    }
+  } else {
+    streamer.disableMic();
+  }
+});
+
+el.ctlAudio.addEventListener('change', () => {
+  if (state.role !== 'broadcaster') return;
+  streamer.setSystemAudio(el.ctlAudio.checked);
+});
+
+el.btnPlayOverlay.addEventListener('click', () => {
+  player.video.play().catch(() => {});
+  el.btnPlayOverlay.hidden = true;
+});
+
+el.btnFullscreen.addEventListener('click', () => {
+  const target = el.videoWrap;
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  else target.requestFullscreen?.().catch(() => {});
+});
+
+el.btnSnapshot.addEventListener('click', () => {
+  const video = player.video;
+  if (!video.videoWidth) {
+    flash('Nao ha imagem para capturar.');
+    return;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `captura-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }, 'image/png');
+});
+
+// ------------------------------------------------------------- streamer/player
+
+streamer.addEventListener('chunk', (event) => {
+  net.sendBinary(event.detail);
+});
+
+streamer.addEventListener('started', (event) => {
+  state.mimeType = event.detail.mimeType;
+  el.ctlAudio.disabled = !streamer.systemTrack;
+  el.ctlAudio.checked = Boolean(streamer.systemTrack) && el.chkAudio.checked;
+  el.ctlMic.checked = Boolean(streamer.micTrack);
+  announceBroadcast();
+});
+
+streamer.addEventListener('restart', () => {
+  notifyRestart();
+});
+
+streamer.addEventListener('ended', () => {
+  if (state.role === 'broadcaster') stopSharing();
+});
+
+player.addEventListener('ready', () => {
+  showVideo();
+});
+
+player.addEventListener('needplay', () => {
+  el.btnPlayOverlay.hidden = false;
+});
+
+player.addEventListener('error', (event) => {
+  flash(`Erro de decodificacao: ${event.detail?.message ?? 'desconhecido'}`);
+});
+
+// ------------------------------------------------------------------ rede
+
+net.addEventListener('open', () => {
+  net.send({ type: 'hello', name: state.name, room: state.room });
+  if (state.role === 'broadcaster') {
+    // Reanuncia a transmissao (reconexao) e reinicia o gravador para que
+    // os viewers recebam um cabecalho (init segment) valido.
+    state.announced = false;
+    beginBroadcast();
+  }
+});
+
+net.addEventListener('status', (event) => {
+  const { state: status } = event.detail;
+  if (status === 'connecting') setStatus('Conectando...', 'idle');
+  if (status === 'offline') setStatus('Reconectando...', 'idle');
+});
+
+net.addEventListener('close', () => {
+  state.announced = false;
+  if (state.role === 'broadcaster') {
+    setStatus('Reconectando...', 'idle');
+  }
+});
+
+net.addEventListener('binary', (event) => {
+  if (state.role === 'broadcaster') return;
+  player.push(event.detail);
+});
+
+net.addEventListener('message', (event) => {
+  handleServerMessage(event.detail);
+});
+
+function handleServerMessage(msg) {
+  switch (msg.type) {
+    case 'welcome': {
+      net.metaId = msg.id;
+      state.selfId = msg.id;
+      state.peers = new Map((msg.peers ?? []).map((peer) => [peer.id, peer]));
+      state.epoch = msg.epoch;
+      state.mimeType = msg.mimeType;
+      state.broadcaster = msg.broadcaster ?? null;
+      renderPeers();
+      setStatus('Conectado', 'ok');
+      break;
+    }
+
+    case 'peer-joined': {
+      state.peers.set(msg.peer.id, { id: msg.peer.id, name: msg.peer.name });
+      renderPeers();
+      flash(`${msg.peer.name} entrou na sala.`);
+      break;
+    }
+
+    case 'peer-left': {
+      state.peers.delete(msg.peer.id);
+      renderPeers();
+      flash(`${msg.peer.name} saiu da sala.`);
+      break;
+    }
+
+    case 'stream-started': {
+      state.epoch = msg.epoch;
+      state.mimeType = msg.mimeType;
+      state.broadcaster = msg.broadcaster ?? state.broadcaster;
+
+      if (state.role === 'broadcaster') {
+        setStatus('AO VIVO', 'live');
+        break;
+      }
+
+      if (!msg.ready) {
+        state.waitingInit = true;
+        setPlaceholder('Preparando a transmissao...', 'O transmissor esta reiniciando o fluxo.');
+        setStatus('Preparando', 'idle');
+        break;
+      }
+
+      state.waitingInit = false;
+      state.selfStopped = false;
+      player.configure({ mimeType: msg.mimeType, epoch: msg.epoch });
+      showVideo();
+      setStatus('AO VIVO', 'live');
+      el.overlayBar.hidden = false;
+      el.overlayName.textContent = state.broadcaster?.name ?? '';
+      break;
+    }
+
+    case 'stream-stopped': {
+      // Outro cliente assumiu a transmissao: voltamos a ser espectador.
+      if (state.role === 'broadcaster') {
+        // Nao ha o que fazer se quem assumiu a transmissao somos nos.
+        if (msg.broadcaster?.id === state.selfId) break;
+        streamer.stop();
+        state.role = 'viewer';
+        state.announced = false;
+        state.broadcaster = null;
+        state.waitingInit = false;
+        renderRole();
+        renderPeers();
+        flash('Outro participante assumiu a transmissao.');
+        break;
+      }
+
+      // Foi o proprio usuario que parou: mantem a mensagem que ele ja viu.
+      if (state.selfStopped) {
+        state.selfStopped = false;
+        break;
+      }
+
+      state.broadcaster = null;
+      state.waitingInit = false;
+      player.clear();
+      el.overlayBar.hidden = true;
+      setPlaceholder('Nenhuma transmissao ativa', 'Aguardando alguem compartilhar a tela.');
+      setStatus('Conectado', 'ok');
+      renderPeers();
+      break;
+    }
+
+    case 'need-init': {
+      // Alguem entrou no meio da transmissao: reinicia o gravador para
+      // reenviar o cabecalho do stream (init segment).
+      if (state.role === 'broadcaster') streamer.scheduleRestart();
+      break;
+    }
+
+    case 'chat': {
+      const li = document.createElement('li');
+      const who = document.createElement('b');
+      who.textContent = msg.name;
+      const text = document.createElement('span');
+      text.textContent = msg.text;
+      li.append(who, text);
+      el.chatList.appendChild(li);
+      el.chatList.scrollTop = el.chatList.scrollHeight;
+      break;
+    }
+
+    case 'error': {
+      if (el.room.hidden) landingError(msg.message);
+      else flash(msg.message);
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+// ------------------------------------------------------------------ stats
+
+// Enquanto o espectador espera o "init segment", pede periodicamente que o
+// transmissor reinicie o gravador. Isso cobre o caso em que o transmissor
+// ignorou (ou nao recebeu) o primeiro pedido de `need-init`.
+setInterval(() => {
+  if (el.room.hidden) return;
+  if (state.role !== 'viewer' || !state.waitingInit) return;
+  net.send({ type: 'need-init' });
+}, 3000);
+
+setInterval(() => {
+  if (el.room.hidden) return;
+  const now = performance.now();
+  const delta = player.bytes - state.lastBytes;
+  const seconds = (now - state.lastSample) / 1000;
+  state.lastBytes = player.bytes;
+  state.lastSample = now;
+  const bps = seconds > 0 ? delta / seconds : 0;
+  const rate = bps >= 1024 ? `${(bps / 1024).toFixed(1)} KB/s` : `${Math.round(bps)} B/s`;
+
+  const w = player.video.videoWidth;
+  const h = player.video.videoHeight;
+  el.overlayRes.textContent = w ? `${w}x${h} - ${rate}` : '';
+
+  el.stats.replaceChildren();
+  const rows = [
+    ['resolucao', w ? `${w}x${h}` : '-'],
+    ['recebido', rate],
+    ['pessoas', String(state.peers.size)],
+  ];
+  for (const [label, value] of rows) {
+    const wrap = document.createElement('div');
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    wrap.append(dt, dd);
+    el.stats.appendChild(wrap);
+  }
+}, 1000);
+
+// ------------------------------------------------------------------- boot
+
+// Hook de depuracao (console do navegador): window.__wss.state / .player / .streamer
+window.__wss = { state, player, streamer, net };
+
+const params = new URLSearchParams(location.search);
+setRoom(params.get('room') ?? 'principal');
+el.nameInput.focus();

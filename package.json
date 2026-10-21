@@ -1,0 +1,22 @@
+{
+  "name": "web_screen_share",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Servidor + site web para compartilhamento de tela sem senha: o cliente captura a tela, envia os chunks de midia ao servidor e o servidor retransmite para todos os-visualizadores da sala.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "selftest": "node scripts/selftest.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
