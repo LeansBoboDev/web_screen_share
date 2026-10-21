@@ -17,6 +17,15 @@ const MAX_CHAT = 500;
 const MAX_BACKLOG = 8 * 1024 * 1024; // descarta quadro se o cliente nao consegue consumir
 const HEARTBEAT_MS = 30_000;
 
+// Log de diagnostico. Desligue com LOG=0 (ou WSS_LOG=0).
+const LOG_ENABLED = !['0', 'false', 'off'].includes(
+  String(process.env.LOG ?? process.env.WSS_LOG ?? '1').toLowerCase()
+);
+
+function log(...args) {
+  if (LOG_ENABLED) console.log(...args);
+}
+
 export class RoomManager {
   constructor() {
     /** @type {Map<string, Room>} */
@@ -137,10 +146,12 @@ export class RoomManager {
     });
 
     this.broadcast(room, { type: 'peer-joined', peer: { id: ws.meta.id, name } }, ws);
+    log(`[sala ${roomId}] entrou "${name}" (${ws.meta.id}) - ${room.clients.size} pessoa(s)`);
 
     // O novato entrou durante uma transmissao: pede o "cabecalho" (init segment)
     // ao broadcaster, que reinicia o gravador para reenviar os primeiros bytes.
     if (room.broadcaster) {
+      log(`[sala ${roomId}] "${name}" entrou durante a transmissao -> precisa do init segment`);
       this.send(ws, {
         type: 'stream-started',
         epoch: room.epoch,
@@ -175,6 +186,10 @@ export class RoomManager {
     room.epoch += 1;
     room.mimeType = typeof msg.mimeType === 'string' ? msg.mimeType : null;
 
+    log(
+      `[sala ${room.id}] "${ws.meta.name}" começou a transmitir (epoch ${room.epoch}, ${room.mimeType})`
+    );
+
     this.broadcast(room, {
       type: 'stream-started',
       epoch: room.epoch,
@@ -190,6 +205,8 @@ export class RoomManager {
     room.epoch += 1;
     if (typeof msg.mimeType === 'string') room.mimeType = msg.mimeType;
 
+    log(`[sala ${room.id}] reinicio do fluxo (epoch ${room.epoch})`);
+
     this.broadcast(room, {
       type: 'stream-started',
       epoch: room.epoch,
@@ -204,12 +221,14 @@ export class RoomManager {
     if (room.broadcaster !== ws) return;
     room.broadcaster = null;
     ws.meta.role = 'viewer';
+    log(`[sala ${room.id}] "${ws.meta.name}" parou de transmitir`);
     this.broadcast(room, { type: 'stream-stopped', reason: 'stopped' });
   }
 
   requestInit(ws) {
     const room = this.room(ws.meta.roomId ?? DEFAULT_ROOM);
     if (room.broadcaster && room.broadcaster !== ws) {
+      log(`[sala ${room.id}] "${ws.meta.name}" pediu need-init`);
       this.send(room.broadcaster, { type: 'need-init', peer: { id: ws.meta.id, name: ws.meta.name } });
     }
   }
@@ -255,9 +274,11 @@ export class RoomManager {
 
     if (room.broadcaster === ws) {
       room.broadcaster = null;
+      log(`[sala ${room.id}] "${ws.meta.name}" saiu durante a transmissao`);
       this.broadcast(room, { type: 'stream-stopped', reason: 'left' });
     }
 
+    log(`[sala ${room.id}] saiu "${ws.meta.name}" - ${room.clients.size} pessoa(s)`);
     this.broadcast(room, { type: 'peer-left', peer: { id: ws.meta.id, name: ws.meta.name } });
 
     if (room.clients.size === 0) this.rooms.delete(roomId);

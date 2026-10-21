@@ -7,6 +7,7 @@ const $ = (id) => document.getElementById(id);
 const el = {
   landing: $('landing'),
   landingAlert: $('landing-alert'),
+  landingSecurity: $('landing-security'),
   nameInput: $('name-input'),
   roomInput: $('room-input'),
   chkAudio: $('chk-audio'),
@@ -26,6 +27,7 @@ const el = {
 
   videoWrap: $('video-wrap'),
   video: $('video'),
+  preview: $('preview'),
   placeholder: $('placeholder'),
   placeholderTitle: $('placeholder-title'),
   placeholderText: $('placeholder-text'),
@@ -43,6 +45,7 @@ const el = {
   watchPanel: $('watch-panel'),
   btnSnapshot: $('btn-snapshot'),
   btnFullscreen: $('btn-fullscreen'),
+  btnRetry: $('btn-retry'),
 
   stats: $('stats'),
   peerBadge: $('peer-badge'),
@@ -68,7 +71,10 @@ const state = {
   announced: false,
   waitingInit: false,
   selfStopped: false,
+  configuredAt: 0,
   lastBytes: 0,
+  lastSent: 0,
+  sentBytes: 0,
   lastSample: performance.now(),
 };
 
@@ -155,11 +161,33 @@ function setPlaceholder(title, text) {
   el.placeholderTitle.textContent = title;
   el.placeholderText.textContent = text;
   el.videoWrap.classList.remove('has-video');
+  el.videoWrap.classList.remove('is-sharing');
 }
 
 function showVideo() {
   el.placeholder.hidden = true;
   el.videoWrap.classList.add('has-video');
+  el.videoWrap.classList.remove('is-sharing');
+}
+
+/**
+ * Previa local do que esta sendo compartilhado. Sem isso o transmissor fica
+ * olhando para um "carregando" eterno, ja que a tela dele nao volta pelo
+ * servidor.
+ */
+function showPreview() {
+  const stream = streamer.displayStream;
+  el.preview.srcObject = stream ?? null;
+  if (!stream) return;
+  el.preview.play?.().catch(() => {});
+  el.placeholder.hidden = true;
+  el.videoWrap.classList.add('is-sharing');
+  el.videoWrap.classList.remove('has-video');
+}
+
+function hidePreview() {
+  el.preview.srcObject = null;
+  el.videoWrap.classList.remove('is-sharing');
 }
 
 function renderPeers() {
@@ -197,6 +225,15 @@ function renderRole() {
   const broadcasting = state.role === 'broadcaster';
   el.broadcastPanel.hidden = !broadcasting;
   el.watchPanel.hidden = broadcasting;
+  if (broadcasting) {
+    if (streamer.displayStream) {
+      showPreview();
+    } else {
+      setPlaceholder('Preparando a captura...', 'Conectando ao seletor de tela do navegador.');
+    }
+  } else {
+    hidePreview();
+  }
 }
 
 // ------------------------------------------------------------------ entrada
@@ -355,6 +392,7 @@ async function changeSource() {
   streamer.setSystemAudio(el.chkAudio.checked && Boolean(streamer.systemTrack));
   el.ctlAudio.checked = streamer.systemTrack ? el.chkAudio.checked : false;
   el.ctlAudio.disabled = !streamer.systemTrack;
+  showPreview(); // a previa local passa a mostrar a nova fonte
 
   // A nova epoch precisa ser enviada ANTES do primeiro chunk novo.
   notifyRestart();
@@ -428,6 +466,14 @@ el.btnFullscreen.addEventListener('click', () => {
   else target.requestFullscreen?.().catch(() => {});
 });
 
+el.btnRetry.addEventListener('click', () => {
+  el.btnRetry.hidden = true;
+  setPlaceholder('Reconectando...', 'Pedindo um novo fluxo de video ao transmissor.');
+  state.waitingInit = true;
+  state.configuredAt = performance.now();
+  net.send({ type: 'need-init' });
+});
+
 el.btnSnapshot.addEventListener('click', () => {
   const video = player.video;
   if (!video.videoWidth) {
@@ -452,6 +498,7 @@ el.btnSnapshot.addEventListener('click', () => {
 // ------------------------------------------------------------- streamer/player
 
 streamer.addEventListener('chunk', (event) => {
+  state.sentBytes += event.detail.byteLength ?? 0;
   net.sendBinary(event.detail);
 });
 
@@ -472,6 +519,7 @@ streamer.addEventListener('ended', () => {
 });
 
 player.addEventListener('ready', () => {
+  el.btnRetry.hidden = true;
   showVideo();
 });
 
@@ -480,7 +528,10 @@ player.addEventListener('needplay', () => {
 });
 
 player.addEventListener('error', (event) => {
-  flash(`Erro de decodificacao: ${event.detail?.message ?? 'desconhecido'}`);
+  const message = event.detail?.message ?? 'desconhecido';
+  flash(`Erro de decodificacao: ${message}`);
+  setPlaceholder('Nao foi possivel decodificar o video', `${message}. Use "Reconectar video" para tentar de novo.`);
+  el.btnRetry.hidden = false;
 });
 
 // ------------------------------------------------------------------ rede
@@ -528,6 +579,14 @@ function handleServerMessage(msg) {
       state.broadcaster = msg.broadcaster ?? null;
       renderPeers();
       setStatus('Conectado', 'ok');
+      // Sem transmissor em andamento: o texto do placeholder deixa de ser
+      // "conectando" (a conexao ja esta feita) e passa a explicar a espera.
+      if (state.role === 'viewer' && !state.broadcaster) {
+        setPlaceholder(
+          'Aguardando uma transmissao',
+          'Ninguem esta compartilhando a tela ainda. Voce pode assumir a transmissao abaixo.'
+        );
+      }
       break;
     }
 
@@ -557,6 +616,7 @@ function handleServerMessage(msg) {
 
       if (!msg.ready) {
         state.waitingInit = true;
+        state.configuredAt = performance.now();
         setPlaceholder('Preparando a transmissao...', 'O transmissor esta reiniciando o fluxo.');
         setStatus('Preparando', 'idle');
         break;
@@ -564,6 +624,8 @@ function handleServerMessage(msg) {
 
       state.waitingInit = false;
       state.selfStopped = false;
+      state.configuredAt = performance.now();
+      el.btnRetry.hidden = true;
       player.configure({ mimeType: msg.mimeType, epoch: msg.epoch });
       showVideo();
       setStatus('AO VIVO', 'live');
@@ -636,6 +698,78 @@ function handleServerMessage(msg) {
 
 // ------------------------------------------------------------------ stats
 
+// Vigia do player: o Chrome NAO abre o MediaSource enquanto a aba esta
+// oculta (ele adia o 'sourceopen' ate a aba voltar a ficar visivel). Sem
+// esse aviso a tela ficaria em "carregando" para sempre, sem explicacao.
+setInterval(() => {
+  if (el.room.hidden) return;
+  if (state.role !== 'viewer') return;
+
+  const waited = performance.now() - state.configuredAt;
+
+  if (state.waitingInit) {
+    // O transmissor nao reenviou o cabecalho do fluxo.
+    if (waited < 15000) return;
+    setPlaceholder(
+      'Sem imagem do transmissor',
+      'O transmissor nao reenviou o inicio do video. Clique em "Reconectar video" para tentar de novo.'
+    );
+    el.btnRetry.hidden = false;
+    return;
+  }
+
+  if (!player.configured) return;
+
+  if (player.isOpen) {
+    // MediaSource aberto, mas nenhum frame decodificado: o formato enviado
+    // pelo transmissor chegou sem imagem (codec nao suportado, por exemplo).
+    if (waited > 12000 && player.video.videoWidth === 0) {
+      setPlaceholder(
+        'O fluxo chegou sem imagem',
+        'O video nao pode ser decodificado neste navegador. Clique em "Reconectar video" para tentar de novo.'
+      );
+      el.btnRetry.hidden = false;
+    }
+    return;
+  }
+
+  if (document.visibilityState !== 'visible') {
+    // Aba oculta (ou janela encoberta por outra): o Chrome adia o
+    // 'sourceopen' e nada decodifica ate a aba voltar a ficar visivel.
+    // Explica isso em vez de girar infinitamente.
+    setPlaceholder(
+      'Janela em segundo plano',
+      'O Chrome pausa a decodificacao enquanto a aba ou a janela esta oculta. ' +
+        'Clique nesta janela para ver o video (a imagem volta sozinha).'
+    );
+    el.btnRetry.hidden = true;
+    return;
+  }
+
+  if (waited < 8000) return;
+
+  setPlaceholder(
+    'Nao foi possivel iniciar o video',
+    'O navegador nao conseguiu abrir o fluxo. Clique em "Reconectar video" para tentar de novo.'
+  );
+  el.btnRetry.hidden = false;
+}, 1000);
+
+// Ao voltar para primeiro plano, o Chrome conclui a abertura do MediaSource
+// que havia adiado. Se nao concluir, pedimos um fluxo novo ao transmissor.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (el.room.hidden) return;
+  if (state.role !== 'viewer') return;
+  if (!player.configured) return;
+  if (player.isOpen) return;
+  setPlaceholder('Retomando o video...', 'Conectando ao fluxo do transmissor.');
+  setTimeout(() => {
+    if (player.isOpen) return;
+    net.send({ type: 'need-init' });
+  }, 1200);
+});
+
 // Enquanto o espectador espera o "init segment", pede periodicamente que o
 // transmissor reinicie o gravador. Isso cobre o caso em que o transmissor
 // ignorou (ou nao recebeu) o primeiro pedido de `need-init`.
@@ -648,22 +782,42 @@ setInterval(() => {
 setInterval(() => {
   if (el.room.hidden) return;
   const now = performance.now();
-  const delta = player.bytes - state.lastBytes;
   const seconds = (now - state.lastSample) / 1000;
+  const delta = player.bytes - state.lastBytes;
+  const sentDelta = state.sentBytes - state.lastSent;
   state.lastBytes = player.bytes;
+  state.lastSent = state.sentBytes;
   state.lastSample = now;
   const bps = seconds > 0 ? delta / seconds : 0;
+  const sentBps = seconds > 0 ? sentDelta / seconds : 0;
   const rate = bps >= 1024 ? `${(bps / 1024).toFixed(1)} KB/s` : `${Math.round(bps)} B/s`;
+  const sentRate =
+    sentBps >= 1024 ? `${(sentBps / 1024).toFixed(1)} KB/s` : `${Math.round(sentBps)} B/s`;
 
   const w = player.video.videoWidth;
   const h = player.video.videoHeight;
   el.overlayRes.textContent = w ? `${w}x${h} - ${rate}` : '';
+
+  // Descricao curta do estado do fluxo: mostra em que ponto o video parou.
+  let flow;
+  if (state.role === 'broadcaster') {
+    flow = streamer.isRecording ? `enviando ${sentRate}` : 'gravador parado';
+  } else if (!player.configured) {
+    flow = state.waitingInit ? 'aguardando cabecalho' : 'sem transmissao';
+  } else if (player.isOpen) {
+    flow = w ? `recebendo ${rate}` : 'aberto, sem imagem';
+  } else {
+    flow = 'abrindo o video...';
+  }
 
   el.stats.replaceChildren();
   const rows = [
     ['resolucao', w ? `${w}x${h}` : '-'],
     ['recebido', rate],
     ['pessoas', String(state.peers.size)],
+    ['conexao', net.state],
+    ['fluxo', flow],
+    ['aba', document.visibilityState === 'visible' ? 'visivel' : 'oculta'],
   ];
   for (const [label, value] of rows) {
     const wrap = document.createElement('div');
@@ -684,3 +838,6 @@ window.__wss = { state, player, streamer, net };
 const params = new URLSearchParams(location.search);
 setRoom(params.get('room') ?? 'principal');
 el.nameInput.focus();
+
+// A captura de tela so funciona em contexto seguro (https ou localhost).
+if (!window.isSecureContext) el.landingSecurity.hidden = false;

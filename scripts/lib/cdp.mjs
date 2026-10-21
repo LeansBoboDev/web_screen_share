@@ -80,7 +80,7 @@ export class Cdp {
 }
 
 /** Sobe um navegador headless e devolve { cdp, close }. */
-export async function launchBrowser(port = 9333) {
+export async function launchBrowser(port = 9333, extraArgs = []) {
   const browserPath = findBrowser();
   if (!browserPath) throw new Error('Nenhum navegador (Chrome/Edge) encontrado.');
 
@@ -96,6 +96,7 @@ export async function launchBrowser(port = 9333) {
       '--autoplay-policy=no-user-gesture-required',
       '--disable-gpu',
       '--use-fake-ui-for-media-stream',
+      ...extraArgs,
       'about:blank',
     ],
     { stdio: 'ignore' }

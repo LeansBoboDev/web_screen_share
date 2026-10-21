@@ -90,15 +90,49 @@ export class Player extends EventTarget {
     }
   }
 
+  /**
+   * Lista de mimeTypes aceitos, do mais especifico para o mais generico.
+   * Cada navegador suporta um subconjunto diferente de codecs; se o tipo
+   * exato declarado pelo transmissor nao for suportado, tentamos a familia
+   * (webm/mp4) antes de desistir.
+   */
+  _candidates(mimeType) {
+    const list = [mimeType];
+    const base = mimeType.split(';')[0].trim().toLowerCase();
+    if (base === 'video/webm') {
+      list.push('video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm');
+    } else if (base === 'video/mp4') {
+      list.push(
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1.42E01E',
+        'video/mp4'
+      );
+    }
+    return [...new Set(list)];
+  }
+
   _create() {
     if (!('MediaSource' in window)) {
       this._fail('Navegador sem suporte a MediaSource.');
       return;
     }
-    if (!MediaSource.isTypeSupported(this.mimeType)) {
+
+    const candidates = this._candidates(this.mimeType);
+    const supported = candidates.find((type) => {
+      try {
+        return MediaSource.isTypeSupported(type);
+      } catch {
+        return false;
+      }
+    });
+    if (!supported) {
       this._fail(`Formato nao suportado pelo navegador: ${this.mimeType}`);
       return;
     }
+    if (supported !== this.mimeType) {
+      console.warn(`[player] usando "${supported}" no lugar de "${this.mimeType}"`);
+    }
+    this.mimeType = supported;
 
     const ms = new MediaSource();
     this.mediaSource = ms;

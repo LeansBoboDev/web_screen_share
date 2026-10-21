@@ -48,6 +48,13 @@
 
         <div id="landing-alert" class="alert" hidden></div>
 
+        <div id="landing-security" class="alert" hidden>
+          <strong>Atencao:</strong> este endereco nao e seguro. Voce consegue <em>assistir</em>,
+          mas para <strong>compartilhar a tela</strong> abra o site por
+          <code>http://localhost:8080</code> ou por <code>https://</code> (o navegador exige
+          um contexto seguro para a captura de tela).
+        </div>
+
         <details class="landing__extra">
           <summary>Opcoes de captura</summary>
           <label class="check">
@@ -94,6 +101,7 @@
         <div class="stage__main">
           <div id="video-wrap" class="video-wrap">
             <video id="video" playsinline autoplay></video>
+            <video id="preview" playsinline autoplay muted></video>
 
             <div id="placeholder" class="placeholder">
               <div class="placeholder__spinner" aria-hidden="true"></div>
@@ -135,6 +143,7 @@
                 <button id="btn-share-2" class="btn btn--small btn--primary" type="button">Compartilhar minha tela</button>
                 <button id="btn-snapshot" class="btn btn--small btn--ghost" type="button">Capturar imagem</button>
                 <button id="btn-fullscreen" class="btn btn--small btn--ghost" type="button">Tela cheia</button>
+                <button id="btn-retry" class="btn btn--small btn--ghost" type="button" hidden>Reconectar video</button>
               </div>
             </div>
 

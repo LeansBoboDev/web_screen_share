@@ -65,7 +65,14 @@ export class Streamer extends EventTarget {
    */
   async open({ wantAudio = false, wantMic = false } = {}) {
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      throw new Error('Este navegador nao suporta captura de tela (getDisplayMedia).');
+      // `navigator.mediaDevices` nao existe fora de um contexto seguro
+      // (http:// sem localhost). O erro precisa dizer isso, senao parece
+      // que o servidor quebrou.
+      throw new Error(
+        window.isSecureContext
+          ? 'Este navegador nao suporta captura de tela (getDisplayMedia).'
+          : 'Captura de tela exige um endereco seguro: abra o site por https:// ou por http://localhost.'
+      );
     }
 
     this._release();

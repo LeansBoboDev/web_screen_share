@@ -36,9 +36,20 @@ Variaveis de ambiente opcionais:
 | -------- | -------- | ------------------------------- |
 | `PORT`   | `8080`   | Porta HTTP/WebSocket            |
 | `HOST`   | `0.0.0.0`| Interface de escuta              |
+| `LOG`    | `1`      | Log de diagnostico (`0` desliga) |
 
 ```bash
 PORT=3000 npm start
+```
+
+Com `LOG=1` (padrao) o servidor registra entradas, saidas, inicio/fim de transmissao e
+pedidos de `need-init` — e o primeiro lugar a olhar quando algo nao funciona:
+
+```
+[sala principal] entrou "Ana" (3f2a1c) - 1 pessoa(s)
+[sala principal] "Ana" comecou a transmitir (epoch 1, video/webm;codecs=vp8,opus)
+[sala principal] "Bia" entrou durante a transmissao -> precisa do init segment
+[sala principal] reinicio do fluxo (epoch 2)
 ```
 
 ### Uso
@@ -58,6 +69,40 @@ Quem esta na sala tambem tem **chat** ao lado do video e a lista de participante
 Quem estava apenas assistindo pode assumir a transmissao a qualquer momento pelo botao
 **Compartilhar minha tela** (painel *Visualizando*) — o transmissor anterior volta a ser
 espectador.
+
+### Quem compartilha tambem ve a propria tela
+
+A tela de quem esta transmitindo **nao volta pelo servidor** (senao haveria um laco de
+video). Para isso o app mostra uma **previa local** da captura na propria janela: assim
+nunca existe uma tela em "carregando" do lado do transmissor.
+
+### Quando o video nao aparece
+
+O app nunca fica girando em "carregando" sem explicar o motivo:
+
+| Situacao                                | O que aparece                                                  |
+| --------------------------------------- | -------------------------------------------------------------- |
+| Entrou antes de alguem compartilhar      | *Aguardando uma transmissao* + botao para assumir a transmissao  |
+| Transmissao comecou no meio da sua sessao | *Preparando a transmissao...*                                 |
+| Aba/ janela oculta ou encoberta         | *Janela em segundo plano* — o Chrome adia a decodificacao         |
+| Codec nao suportado / fluxo sem imagem   | *O fluxo chegou sem imagem* + botao **Reconectar video**         |
+
+O botao **Reconectar video** (painel *Visualizando*) pede um fluxo novo ao transmissor,
+reiniciando a gravacao e gerando um novo *init segment*.
+
+O painel de estatisticas (rodape da sala) mostra o estado em tempo real — e o primeiro
+lugar a olhar quando algo nao funciona:
+
+```
+resolucao 1920x1080   recebido 320.5 KB/s   pessoas 2
+conexao online         fluxo recebendo 320.5 KB/s   aba visivel
+```
+
+| Campo       | Significado                                                          |
+| ----------- | -------------------------------------------------------------------- |
+| `conexao`   | `online`, `connecting` ou `offline` (WebSocket)                       |
+| `fluxo`     | `sem transmissao`, `aguardando cabecalho`, `abrindo o video...`, `recebendo ...`, `aberto, sem imagem`, `enviando ...` |
+| `aba`       | `visivel` ou `oculta` (a aba encoberta impede a decodificacao)       |
 
 ---
 
@@ -92,6 +137,8 @@ espectador.
 - Quando alguem entra no meio da transmissao, o servidor avisa o transmissor com
   `need-init`; o transmissor reinicia o gravador e reenvia o cabecalho. Se o aviso se
   perder, o espectador pede `need-init` de novo periodicamente.
+- Se o navegador nao suportar o `mimeType` exato, o player tenta a familia do formato
+  (`video/webm` -> `video/webm;codecs=vp8,opus` -> `video/webm;codecs=vp8` -> ...).
 
 ### Mensagens do protocolo
 
@@ -121,26 +168,37 @@ O servidor precisa estar rodando (`npm start`) em outra aba.
 ```bash
 npm run selftest   # protocolo do relay: handshake, peers, epoch, midia binaria, chat, takeover
 npm run e2e        # navegador real (Chrome/Edge headless via CDP): captura -> MSE -> <video>
-npm test           # os dois em sequencia
+npm run e2e:real   # captura de tela REAL (getDisplayMedia) em dois navegadores separados
+npm test           # selftest + e2e
 ```
 
 O `selftest` sobe tres clientes WebSocket e valida o protocolo do servidor (entrada e
 saida de peers, *epochs*, retransmissao binaria intacta, chat e troca de transmissor).
 
-O `e2e` abre tres abas na mesma sala (um transmissor com captura falsa gerada por
-`canvas`, um espectador e um espectador que entra no meio da transmissao), verifica que o
-video decodifica, que o chat funciona, que a troca de transmissor funciona e que nao ha
-excecao de JavaScript.
+O `e2e` abre quatro abas na mesma sala (um transmissor com captura falsa gerada por
+`canvas`, um espectador, um espectador que entra no meio da transmissao e um espectador
+numa sala vazia), verifica que o video decodifica, que o transmissor ve a previa local,
+que a aba em segundo plano e avisada, que o chat funciona, que a troca de transmissor
+funciona e que nao ha excecao de JavaScript.
 
-> O Chrome so decodifica com a aba visivel, entao o teste traz cada aba para o primeiro
-> plano antes de conferir a imagem.
+> O Chrome so decodifica com a aba visivel: o `sourceopen` do `MediaSource` fica adiado
+> enquanto a aba esta oculta. O teste traz cada aba para o primeiro plano antes de
+> conferir a imagem e, no caminho inverso, verifica que o app explica a situacao em vez de
+> ficar girando.
+
+O `e2e:real` e o teste mais fiel ao uso real: ele sobe **dois navegadores separados**
+(processos distintos), usa `getDisplayMedia()` de verdade — o Chrome headless escolhe a
+fonte sozinho com `--auto-select-desktop-capture-source` — e confere que o espectador
+decodifica a imagem real e que quem compartilha ve a previa local.
 
 ---
 
 ## Limitacoes conhecidas
 
 - **Contexto seguro obrigatorio.** `getDisplayMedia` so funciona em `localhost` ou em
-  `https://`. Para acessar de outra maquina, use um proxy com TLS ou um tunel.
+  `https://`. Para acessar de outra maquina, use um proxy com TLS ou um tunel. Abrir pelo
+  IP da maquina (ex.: `http://192.168.0.10:8080`) deixa **assistir** funcionando, mas
+  **compartilhar** e bloqueado pelo navegador — a tela de entrada avisa isso.
 - **Audio do sistema.** Depende do navegador e de como a tela foi compartilhada: no
   Chrome/Edge, compartilhe uma **aba** ou **janela** e marque *Compartilhar audio da aba*.
   Tela inteira e Firefox podem nao expor audio.
@@ -154,10 +212,16 @@ excecao de JavaScript.
   estiver aberta.
 - **Safari** nao suporta bem `MediaSource` com `video/webm` gerado por `MediaRecorder`;
   use Chrome ou Edge para assistir.
+- **Firefox** gera `MediaRecorder` em WebM "nao fragmentado", que o `MediaSource` costuma
+  rejeitar (*appendBuffer* falha). O app detecta o erro e oferece **Reconectar video**, mas
+  a combinacao mais confiavel e Chrome/Edge nos dois lados.
 - **Aba em segundo plano.** O Chrome adia a abertura do `MediaSource` enquanto a aba
-  esta oculta: o video em si continua tocando, mas se a transmissao reiniciar (nova
-  *epoch*) com a aba escondida, a imagem so volta ao voltar para a aba. Os chunks que
-  chegam nesse periodo ficam em uma fila limitada, para nao acumular memoria.
+  esta oculta: nada e decodificado ate a aba voltar a ficar visivel (ao voltar, o app
+  retoma sozinho). Por isso o app mostra *Aba em segundo plano* em vez de girar
+  infinitamente. Os chunks que chegam nesse periodo ficam em uma fila limitada, para nao
+  acumular memoria.
+- **Quem compartilha ve a propria tela via previa local**, que nao passa pelo servidor
+  (evita laco de video e nao consome banda do servidor).
 
 ---
 

@@ -424,7 +424,12 @@ body {
   display: none;
 }
 
-.video-wrap.has-video video {
+.video-wrap.has-video #video {
+  display: block;
+}
+
+/* Previa local: o que o transmissor esta compartilhando */
+.video-wrap.is-sharing #preview {
   display: block;
 }
 

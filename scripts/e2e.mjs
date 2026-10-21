@@ -129,15 +129,46 @@ const broadcasterState = await evaluate(
   broadcaster.sessionId,
   `(() => ({
      pill: document.getElementById('status-pill').textContent,
-     panel: document.getElementById('broadcast-panel').hidden === false
+     panel: document.getElementById('broadcast-panel').hidden === false,
+     sharing: document.getElementById('video-wrap').classList.contains('is-sharing'),
+     preview: document.getElementById('preview').videoWidth,
+     placeholderHidden: document.getElementById('placeholder').hidden
    }))()`
 );
 check('transmissor mostra o painel de controle', broadcasterState.panel === true);
 check('transmissor marcado como AO VIVO', broadcasterState.pill.includes('AO VIVO'), broadcasterState.pill);
 
+// Quem compartilha precisa ver a propria tela: sem isso a janela do
+// transmissor ficaria com um "carregando" eterno.
+await bringToFront(cdp, broadcaster.sessionId);
+await sleep(1200);
+const previewState = await evaluate(
+  cdp,
+  broadcaster.sessionId,
+  `(() => ({
+     sharing: document.getElementById('video-wrap').classList.contains('is-sharing'),
+     preview: document.getElementById('preview').videoWidth,
+     placeholderHidden: document.getElementById('placeholder').hidden
+   }))()`
+);
+check(
+  'transmissor ve a previa local da propria tela',
+  previewState.sharing === true && previewState.preview > 0,
+  `preview=${previewState.preview}px`
+);
+check(
+  'transmissor nao fica com "carregando" eterno',
+  previewState.placeholderHidden === true,
+  `placeholder oculto=${previewState.placeholderHidden}`
+);
+
 // -- terceira aba: entra DEPOIS do inicio da transmissao -------------------
 const late = await newPage(cdp, url);
-await sleep(1200);
+await sleep(600);
+// Tira a aba nova do primeiro plano ANTES de ela entrar na sala: assim o
+// Chrome adia a abertura do MediaSource e o app precisa avisar que esta em
+// segundo plano (em vez de girar infinitamente).
+await bringToFront(cdp, broadcaster.sessionId);
 await evaluate(
   cdp,
   late.sessionId,
@@ -146,8 +177,34 @@ await evaluate(
    'ok';`
 );
 
+// A aba nova fica em segundo plano: o Chrome adia a abertura do MediaSource
+// e a tela ficaria girando sem explicacao. O app precisa avisar.
+await sleep(3000);
+const lateHidden = await evaluate(
+  cdp,
+  late.sessionId,
+  `(() => ({
+     visibility: document.visibilityState,
+     placeholder: document.getElementById('placeholder').hidden
+       ? null
+       : document.getElementById('placeholder-title').textContent
+   }))()`
+);
+check(
+  'aba em segundo plano avisa que o Chrome pausa a decodificacao',
+  lateHidden.visibility === 'hidden' && /segundo plano/i.test(lateHidden.placeholder ?? ''),
+  JSON.stringify(lateHidden)
+);
+
 const lateWidth = await waitForVideo(late.sessionId);
 check('espectador tardio decodifica a transmissao', lateWidth > 0, `videoWidth=${lateWidth}`);
+
+const lateVisible = await evaluate(
+  cdp,
+  late.sessionId,
+  `document.getElementById('placeholder').hidden`
+);
+check('espectador volta ao normal ao voltar para o primeiro plano', lateVisible === true);
 
 // O espectador original estava em segundo plano: ao voltar para o primeiro
 // plano o Chrome concludes a abertura do MediaSource e a imagem volta.
@@ -264,6 +321,34 @@ check('antigo transmissor passa a ver a nova transmissao', demotedWidth > 0, `vi
 
 const lateStillLive = await waitForVideo(late.sessionId, 15000);
 check('espectador tardio continuaRecebendo apos o takeover', lateStillLive > 0, `videoWidth=${lateStillLive}`);
+
+// -- sala vazia: o espectador espera, mas a tela explica a espera ------------
+const empty = await newPage(cdp, `${SITE}/?room=vazio${Date.now().toString(36).slice(-4)}`);
+await sleep(1200);
+await evaluate(
+  cdp,
+  empty.sessionId,
+  `document.getElementById('name-input').value = 'Espectador Sozinho';
+   document.getElementById('btn-watch').click();
+   'ok';`
+);
+await sleep(1500);
+const emptyState = await evaluate(
+  cdp,
+  empty.sessionId,
+  `(() => ({
+     pill: document.getElementById('status-pill').textContent,
+     placeholder: document.getElementById('placeholder').hidden
+       ? null
+       : document.getElementById('placeholder-title').textContent
+   }))()`
+);
+check('sala sem transmissor explica a espera', /aguardando/i.test(emptyState.placeholder ?? ''), JSON.stringify(emptyState));
+check('sala sem transmissor mostra o botao de compartilhar', await evaluate(
+  cdp,
+  empty.sessionId,
+  `document.getElementById('watch-panel').hidden === false`
+));
 
 // -- erros de console/excecoes ---------------------------------------------
 const relevantErrors = errors.filter((e) => !e.includes('favicon'));
