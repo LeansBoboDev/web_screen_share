@@ -182,6 +182,5 @@ console.log(
     : `\n${failures} verificacao(oes) falharam.\n`
 );
 
-A.close();
-B.close();
+await Promise.all([A.close(), B.close()]);
 process.exit(failures === 0 ? 0 : 1);

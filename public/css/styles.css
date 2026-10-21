@@ -1,3 +1,8 @@
+/* Garante que o atributo hidden vence regras com display (ex.: .placeholder usa grid). */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #0b0f17;
   --bg-soft: #121826;

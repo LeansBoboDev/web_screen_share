@@ -102,14 +102,18 @@ export async function launchBrowser(port = 9333, extraArgs = []) {
     { stdio: 'ignore' }
   );
 
-  const close = () => {
+  // No Windows o Chrome segura os arquivos do perfil ate o processo sair de
+  // fato; apagar logo apos o kill falha em silencio e deixa ~36 MB no %TEMP%.
+  const exited = new Promise((resolve) => browser.once('exit', resolve));
+  const close = async () => {
     try {
       browser.kill();
     } catch {
       /* ignore */
     }
+    await Promise.race([exited, sleep(5000)]);
     try {
-      rmSync(userDataDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     } catch {
       /* ignore */
     }
@@ -125,7 +129,7 @@ export async function launchBrowser(port = 9333, extraArgs = []) {
     }
   }
   if (!version) {
-    close();
+    await close();
     throw new Error('Nao foi possivel iniciar o navegador headless.');
   }
 

@@ -435,5 +435,5 @@ const relevantErrors = errors.filter((e) => !e.includes('favicon'));
 check('nenhuma excecao de JS nas abas', relevantErrors.length === 0, relevantErrors.join(' | '));
 
 console.log(failures === 0 ? '\nE2E OK - pipeline completo funcionando.\n' : `\n${failures} verificacao(oes) falharam.\n`);
-close();
+await close();
 process.exit(failures === 0 ? 0 : 1);
