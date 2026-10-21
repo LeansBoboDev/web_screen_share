@@ -11,7 +11,9 @@
  * Outro detalhe do Chrome: em uma aba em segundo plano (oculta) o evento
  * 'sourceopen' fica adiado ate a aba voltar a ficar visivel. Os chunks que
  * chegam nesse periodo ficam em uma fila com tamanho limitado, para nao
- * acumular memoria.
+ * acumular memoria. Se a fila estourar, o fluxo chega com buracos e o parser
+ * de WebM nunca mais avanca: nesse caso `isStalled()` avisa o app para pedir
+ * um epoch novo ao transmissor (o fluxo recomeca limpo).
  *
  * Eventos emitidos:
  *  - 'ready'    -> buffer pronto
@@ -21,6 +23,7 @@
  */
 
 const MAX_QUEUE = 60; // ~15 s de chunks (4 por segundo)
+const STALL_MS = 6000; // buffer parado por isso => fluxo quebrado
 
 export class Player extends EventTarget {
   constructor(video) {
@@ -35,6 +38,46 @@ export class Player extends EventTarget {
     this.objectUrl = null;
     this.bytes = 0;
     this.token = 0;
+    // Diagnostico: quantos chunks entraram, quantos foram aplicados no
+    // buffer e quantos foram perdidos (fila estourou).
+    this.appended = 0;
+    this.dropped = 0;
+    this.updateEnd = 0;
+    this.bufferError = null;
+    this.lastBufferedEnd = 0;
+    this.lastProgressAt = 0;
+  }
+
+  /**
+   * O fluxo parou de avancar?
+   *
+   * Duas situacoes quebram o video de vez (o parser de WebM nao se recupera
+   * de um stream com buracos e o buffer fica congelado):
+   *  1. algum chunk foi descartado (a fila estourou porque a aba ficou
+   *     oculta e o Chrome adiou a abertura do MediaSource);
+   *  2. o buffer parou de crescer mesmo com bytes chegando.
+   *
+   * Em ambos os casos a solucao e pedir um epoch novo ao transmissor: ele
+   * reinicia o gravador e reenvia o cabecalho (init segment) do fluxo.
+   */
+  isStalled() {
+    if (!this.configured) return false;
+    if (this.dropped > 0) return true;
+
+    const buffer = this.sourceBuffer;
+    if (!buffer || !buffer.buffered.length) return false;
+
+    const end = buffer.buffered.end(buffer.buffered.length - 1);
+    if (end > this.lastBufferedEnd + 0.001) {
+      this.lastBufferedEnd = end;
+      this.lastProgressAt = Date.now();
+      return false;
+    }
+    if (!this.lastProgressAt) {
+      this.lastProgressAt = Date.now();
+      return false;
+    }
+    return Date.now() - this.lastProgressAt > STALL_MS;
   }
 
   /** O MediaSource esta anexado ao elemento <video>? */
@@ -50,6 +93,12 @@ export class Player extends EventTarget {
     this.epoch = epoch;
     this.configured = true;
     this.queue = [];
+    this.appended = 0;
+    this.dropped = 0;
+    this.updateEnd = 0;
+    this.bufferError = null;
+    this.lastBufferedEnd = 0;
+    this.lastProgressAt = Date.now();
     this._resetElement();
     if (token !== this.token) return; // houve outra configuracao no meio
     this._create();
@@ -140,7 +189,14 @@ export class Player extends EventTarget {
       if (this.mediaSource !== ms) return;
       try {
         const buffer = ms.addSourceBuffer(this.mimeType);
-        buffer.mode = 'segments';
+        // 'sequence' (padrao do MSE) trata os chunks como um fluxo continuo de
+        // bytes. E o que o MediaRecorder produz: cada chunk e um pedaco de
+        // WebM com os clusters de video e audio intercalados. No modo
+        // 'segments' o Chrome exige que cada append seja um segmento
+        // completo e independente, e os chunks seguintes (que trazem apenas
+        // clusters, sem cabecalho) sao descartados silenciosamente: o video
+        // parava no primeiro quadro (readyState=1, tela preta).
+        buffer.mode = 'sequence';
         buffer.addEventListener('updateend', this._onUpdateEnd);
         buffer.addEventListener('error', this._onBufferError);
         this.sourceBuffer = buffer;
@@ -168,11 +224,13 @@ export class Player extends EventTarget {
   }
 
   _onUpdateEnd = () => {
+    this.updateEnd += 1;
     this._drain();
   };
 
   _onBufferError = () => {
-    this._fail('Erro no buffer de midia.');
+    this.bufferError = 'Erro no buffer de midia.';
+    this._fail(this.bufferError);
   };
 
   /** Recebe um chunk binario da transmissao. */
@@ -185,6 +243,7 @@ export class Player extends EventTarget {
     // e preservado para que a decodificacao ainda funcione.
     if (this.queue.length > MAX_QUEUE) {
       this.queue.splice(1, this.queue.length - MAX_QUEUE);
+      this.dropped += 1;
     }
     this._drain();
   }
@@ -195,6 +254,7 @@ export class Player extends EventTarget {
     const chunk = this.queue.shift();
     try {
       buffer.appendBuffer(chunk);
+      this.appended += 1;
       this._play();
     } catch (err) {
       if (err?.name === 'QuotaExceededError') {
@@ -205,7 +265,8 @@ export class Player extends EventTarget {
           /* ignore */
         }
       } else {
-        this._fail(err?.message ?? 'Falha ao decodificar o chunk.');
+        this.bufferError = err?.message ?? 'Falha ao decodificar o chunk.';
+        this._fail(this.bufferError);
       }
     }
   }

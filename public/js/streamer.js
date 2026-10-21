@@ -50,10 +50,26 @@ export class Streamer extends EventTarget {
     this.generation = 0;
     this.lastRestart = 0;
     this.restartTimer = null;
+    this.lastChunkAt = 0;
+    this.chunks = 0;
   }
 
   get isRecording() {
     return Boolean(this.recorder && this.recorder.state === 'recording');
+  }
+
+  /**
+   * A captura parou de produzir dados?
+   *
+   * O Chrome entrega os quadros da tela em ritmo normal mesmo com a aba em
+   * segundo plano, mas a captura pode pausar (janela minimizada, sistema
+   * dormindo, troca de monitor). Sem isso o espectador ficaria olhando um
+   * video congelado sem nenhuma explicacao.
+   */
+  get stalled() {
+    if (!this.isRecording) return false;
+    if (!this.lastChunkAt) return false;
+    return Date.now() - this.lastChunkAt > 4000;
   }
 
   // ------------------------------------------------------------- captura
@@ -175,6 +191,8 @@ export class Streamer extends EventTarget {
 
     recorder.ondataavailable = (event) => {
       if (!event.data || event.data.size === 0) return;
+      this.lastChunkAt = Date.now();
+      this.chunks += 1;
       // Serializa os envios para preservar a ordem dos chunks.
       this.queue = this.queue
         .then(() => event.data.arrayBuffer())

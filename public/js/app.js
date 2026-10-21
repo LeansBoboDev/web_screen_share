@@ -37,6 +37,7 @@ const el = {
   btnPlayOverlay: $('btn-play-overlay'),
 
   broadcastPanel: $('broadcast-panel'),
+  broadcastWarning: $('broadcast-warning'),
   ctlMic: $('ctl-mic'),
   ctlAudio: $('ctl-audio'),
   btnChangeSource: $('btn-change-source'),
@@ -70,6 +71,9 @@ const state = {
   mimeType: null,
   announced: false,
   waitingInit: false,
+  retrying: false,
+  resyncing: false,
+  lastResyncAt: 0,
   selfStopped: false,
   configuredAt: 0,
   lastBytes: 0,
@@ -329,6 +333,7 @@ function leaveRoom() {
   state.announced = false;
   state.selfStopped = false;
   state.waitingInit = false;
+  state.retrying = false;
   state.peers.clear();
   state.broadcaster = null;
   state.selfId = null;
@@ -372,6 +377,7 @@ function stopSharing() {
   state.broadcaster = null;
   state.selfStopped = true;
   state.waitingInit = false;
+  state.retrying = false;
   player.clear();
   renderRole();
   renderPeers();
@@ -466,12 +472,88 @@ el.btnFullscreen.addEventListener('click', () => {
   else target.requestFullscreen?.().catch(() => {});
 });
 
-el.btnRetry.addEventListener('click', () => {
-  el.btnRetry.hidden = true;
-  setPlaceholder('Reconectando...', 'Pedindo um novo fluxo de video ao transmissor.');
+/**
+ * Pede um fluxo de video novo.
+ *
+ * - Se quem compartilha somos nos mesmos, reiniciamos o gravador local (o
+ *   epoch novo e announceado por nos).
+ * - Se nao ha transmissor nenhum, avisa na hora em vez de esperar por algo
+ *   que nunca vai acontecer.
+ * - Caso contrario, pede ao transmissor que reenvie o cabecalho do stream.
+ */
+function requestFreshStream() {
+  if (state.role === 'broadcaster') {
+    setPlaceholder('Reconectando...', 'Reiniciando a gravacao para reenviar o inicio do video.');
+    if (streamer.isRecording) {
+      streamer.restart(); // dispara 'restart' -> novo epoch no servidor
+    } else {
+      notifyRestart();
+      streamer.startRecording();
+    }
+    return;
+  }
+
+  if (!state.broadcaster) {
+    state.retrying = false;
+    state.waitingInit = false;
+    setPlaceholder(
+      'Ninguem esta transmitindo',
+      'Aguardando alguem compartilhar a tela. Voce pode assumir a transmissao abaixo.'
+    );
+    return;
+  }
+
+  net.send({ type: 'need-init' });
+}
+
+/**
+ * Pede um fluxo novo ao transmissor porque o que chegou aqui esta quebrado.
+ *
+ * Um stream de video com "buracos" (chunks perdidos, fila estourada) nao se
+ * recupera sozinho: o parser de WebM para de avancar e o video fica
+ * congelado para sempre. A unica saida e um epoch novo, com o cabecalho
+ * (init segment) do fluxo recomecando do zero.
+ */
+function requestResync(reason, title = 'Sincronizando o video...') {
+  if (state.role !== 'viewer') return;
+  if (!state.broadcaster) return;
+  const now = Date.now();
+  if (now - state.lastResyncAt < 6000) return; // evita pedir em loop
+  state.lastResyncAt = now;
+  state.resyncing = true;
   state.waitingInit = true;
   state.configuredAt = performance.now();
+  setPlaceholder(
+    title,
+    reason ?? 'O fluxo chegou quebrado; pedindo um novo inicio de video ao transmissor.'
+  );
   net.send({ type: 'need-init' });
+}
+
+/**
+ * Avisa o transmissor que a captura parou de produzir dados (acontece quando a
+ * janela e minimizada ou quando o sistema dorme). Sem esse aviso o
+ * espectador so veria um video congelado, sem nenhuma explicacao.
+ */
+function renderBroadcastWarning() {
+  const stalled = state.role === 'broadcaster' && streamer.stalled;
+  if (!stalled) {
+    el.broadcastWarning.hidden = true;
+    return;
+  }
+  el.broadcastWarning.hidden = false;
+  el.broadcastWarning.textContent =
+    'A captura parou de enviar dados. Se esta aba estiver em segundo plano, ' +
+    'clique nela para voltar a transmitir.';
+}
+
+el.btnRetry.addEventListener('click', () => {
+  el.btnRetry.hidden = true;
+  state.retrying = true;
+  state.waitingInit = false;
+  state.configuredAt = performance.now();
+  setPlaceholder('Reconectando...', 'Pedindo um novo fluxo de video ao transmissor.');
+  requestFreshStream();
 });
 
 el.btnSnapshot.addEventListener('click', () => {
@@ -616,6 +698,7 @@ function handleServerMessage(msg) {
 
       if (!msg.ready) {
         state.waitingInit = true;
+        state.retrying = false;
         state.configuredAt = performance.now();
         setPlaceholder('Preparando a transmissao...', 'O transmissor esta reiniciando o fluxo.');
         setStatus('Preparando', 'idle');
@@ -623,6 +706,8 @@ function handleServerMessage(msg) {
       }
 
       state.waitingInit = false;
+      state.retrying = false;
+      state.resyncing = false;
       state.selfStopped = false;
       state.configuredAt = performance.now();
       el.btnRetry.hidden = true;
@@ -644,6 +729,7 @@ function handleServerMessage(msg) {
         state.announced = false;
         state.broadcaster = null;
         state.waitingInit = false;
+        state.retrying = false;
         renderRole();
         renderPeers();
         flash('Outro participante assumiu a transmissao.');
@@ -653,11 +739,13 @@ function handleServerMessage(msg) {
       // Foi o proprio usuario que parou: mantem a mensagem que ele ja viu.
       if (state.selfStopped) {
         state.selfStopped = false;
+        state.retrying = false;
         break;
       }
 
       state.broadcaster = null;
       state.waitingInit = false;
+      state.retrying = false;
       player.clear();
       el.overlayBar.hidden = true;
       setPlaceholder('Nenhuma transmissao ativa', 'Aguardando alguem compartilhar a tela.');
@@ -701,15 +789,45 @@ function handleServerMessage(msg) {
 // Vigia do player: o Chrome NAO abre o MediaSource enquanto a aba esta
 // oculta (ele adia o 'sourceopen' ate a aba voltar a ficar visivel). Sem
 // esse aviso a tela ficaria em "carregando" para sempre, sem explicacao.
+// Esta vigia tambem garante que nenhum estado fique preso ("Reconectando..."
+// sem resposta do transmissor, por exemplo).
 setInterval(() => {
   if (el.room.hidden) return;
-  if (state.role !== 'viewer') return;
 
   const waited = performance.now() - state.configuredAt;
 
+  if (state.retrying) {
+    // Pedimos um fluxo novo e nada chegou: nao deixa o texto preso.
+    if (waited < 10000) return;
+    state.retrying = false;
+    state.waitingInit = false;
+    if (state.role === 'broadcaster') {
+      setPlaceholder(
+        'Nao foi possivel reiniciar a gravacao',
+        'Use "Trocar fonte" na janela de compartilhamento para recomecar a captura.'
+      );
+    } else if (!state.broadcaster) {
+      setPlaceholder(
+        'Ninguem esta transmitindo',
+        'Aguardando alguem compartilhar a tela. Voce pode assumir a transmissao abaixo.'
+      );
+    } else {
+      setPlaceholder(
+        'O transmissor nao respondeu',
+        'Clique em "Reconectar video" para tentar de novo.'
+      );
+      el.btnRetry.hidden = false;
+    }
+    return;
+  }
+
+  if (state.role !== 'viewer') return;
+
   if (state.waitingInit) {
-    // O transmissor nao reenviou o cabecalho do fluxo.
+    // O transmissor nao reenviou o cabecalho do fluxo: desiste de pedir
+    // (senao o transmissor reinicia o gravador a cada 3 s para sempre).
     if (waited < 15000) return;
+    state.waitingInit = false;
     setPlaceholder(
       'Sem imagem do transmissor',
       'O transmissor nao reenviou o inicio do video. Clique em "Reconectar video" para tentar de novo.'
@@ -719,6 +837,13 @@ setInterval(() => {
   }
 
   if (!player.configured) return;
+
+  // O fluxo chegou quebrado (perdeu chunks ou o buffer parou de crescer):
+  // o parser de WebM nao se recupera, entao pedimos um epoch novo.
+  if (document.visibilityState === 'visible' && player.isStalled()) {
+    requestResync();
+    return;
+  }
 
   if (player.isOpen) {
     // MediaSource aberto, mas nenhum frame decodificado: o formato enviado
@@ -760,13 +885,24 @@ setInterval(() => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (el.room.hidden) return;
+
+  if (state.role === 'broadcaster') {
+    // A captura pode ter pausado com a aba oculta. Reiniciando o gravador o
+    // fluxo recomeca limpo e os espectadores recebem um cabecalho novo.
+    if (streamer.stalled && streamer.isRecording) {
+      flash('Captura pausada: reiniciando o fluxo.');
+      streamer.restart();
+    }
+    return;
+  }
+
   if (state.role !== 'viewer') return;
   if (!player.configured) return;
-  if (player.isOpen) return;
+  if (player.isOpen && !player.isStalled()) return;
   setPlaceholder('Retomando o video...', 'Conectando ao fluxo do transmissor.');
   setTimeout(() => {
-    if (player.isOpen) return;
-    net.send({ type: 'need-init' });
+    if (player.isOpen && !player.isStalled()) return;
+    requestResync('O video ficou pausado enquanto a aba estava oculta.', 'Retomando o video...');
   }, 1200);
 });
 
@@ -828,6 +964,8 @@ setInterval(() => {
     wrap.append(dt, dd);
     el.stats.appendChild(wrap);
   }
+
+  renderBroadcastWarning();
 }, 1000);
 
 // ------------------------------------------------------------------- boot

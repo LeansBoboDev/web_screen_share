@@ -85,10 +85,31 @@ O app nunca fica girando em "carregando" sem explicar o motivo:
 | Entrou antes de alguem compartilhar      | *Aguardando uma transmissao* + botao para assumir a transmissao  |
 | Transmissao comecou no meio da sua sessao | *Preparando a transmissao...*                                 |
 | Aba/ janela oculta ou encoberta         | *Janela em segundo plano* — o Chrome adia a decodificacao         |
+| Pediu um fluxo novo e o transmissor nao respondeu | *O transmissor nao respondeu* + botao **Reconectar video** |
+| Nao ha ninguem transmitindo              | *Ninguem esta transmitindo*                                     |
+| O fluxo chegou quebrado                  | *Sincronizando o video...* (recuperacao automatica)             |
 | Codec nao suportado / fluxo sem imagem   | *O fluxo chegou sem imagem* + botao **Reconectar video**         |
 
 O botao **Reconectar video** (painel *Visualizando*) pede um fluxo novo ao transmissor,
 reiniciando a gravacao e gerando um novo *init segment*.
+
+### Recuperacao automatica
+
+Um fluxo de video **com buracos** (chunks perdidos) nao se recupera sozinho: o parser de
+WebM para de avancar e o imagem fica congelada para sempre. Como a aba oculta faz a fila
+de chunks estourar (o Chrome adia a abertura do `MediaSource`), o app:
+
+1. detecta que o fluxo chegou quebrado (algum chunk descartado ou buffer parado de
+   crescer);
+2. pede um **epoch novo** ao transmissor (`need-init`), que reinicia o gravador e reenvia
+   o cabecalho do fluxo;
+3. recria o `MediaSource` e volta a decodificar.
+
+Ou seja: voltar para a aba depois de um tempo escondido ja traz a imagem de volta, sem
+nada manual. Do lado do transmissor, se a captura parar de produzir dados (janela
+minimizada, sistema dormindo, troca de monitor), aparece o aviso **"A captura parou de
+enviar dados"** no painel de compartilhamento — e, ao voltar a ficar visivel, o gravador
+e reiniciado sozinho.
 
 O painel de estatisticas (rodape da sala) mostra o estado em tempo real — e o primeiro
 lugar a olhar quando algo nao funciona:
@@ -139,6 +160,11 @@ conexao online         fluxo recebendo 320.5 KB/s   aba visivel
   perder, o espectador pede `need-init` de novo periodicamente.
 - Se o navegador nao suportar o `mimeType` exato, o player tenta a familia do formato
   (`video/webm` -> `video/webm;codecs=vp8,opus` -> `video/webm;codecs=vp8` -> ...).
+- O `SourceBuffer` usa o modo `sequence` (padrao do MSE): os chunks do `MediaRecorder`
+  formam um fluxo continuo de bytes e cada pedaco pode comecar no meio de um elemento
+  WebM.
+- O player vigia o proprio buffer: se algum chunk for descartado (fila estourada) ou se o
+  buffer parar de crescer, o fluxo e considerado quebrado e o app pede um epoch novo.
 
 ### Mensagens do protocolo
 
@@ -178,8 +204,8 @@ saida de peers, *epochs*, retransmissao binaria intacta, chat e troca de transmi
 O `e2e` abre quatro abas na mesma sala (um transmissor com captura falsa gerada por
 `canvas`, um espectador, um espectador que entra no meio da transmissao e um espectador
 numa sala vazia), verifica que o video decodifica, que o transmissor ve a previa local,
-que a aba em segundo plano e avisada, que o chat funciona, que a troca de transmissor
-funciona e que nao ha excecao de JavaScript.
+que a aba em segundo plano e avisada, que a captura parada e avisada, que o chat
+funciona, que a troca de transmissor funciona e que nao ha excecao de JavaScript.
 
 > O Chrome so decodifica com a aba visivel: o `sourceopen` do `MediaSource` fica adiado
 > enquanto a aba esta oculta. O teste traz cada aba para o primeiro plano antes de
@@ -189,7 +215,9 @@ funciona e que nao ha excecao de JavaScript.
 O `e2e:real` e o teste mais fiel ao uso real: ele sobe **dois navegadores separados**
 (processos distintos), usa `getDisplayMedia()` de verdade — o Chrome headless escolhe a
 fonte sozinho com `--auto-select-desktop-capture-source` — e confere que o espectador
-decodifica a imagem real e que quem compartilha ve a previa local.
+decodifica a imagem real, que quem compartilha ve a previa local e que o espectador
+**se recupera sozinho** depois de ficar com a aba oculta (a fila de chunks estoura, o
+fluxo chega quebrado e o app pede um epoch novo ao transmissor).
 
 ---
 
@@ -219,7 +247,8 @@ decodifica a imagem real e que quem compartilha ve a previa local.
   esta oculta: nada e decodificado ate a aba voltar a ficar visivel (ao voltar, o app
   retoma sozinho). Por isso o app mostra *Aba em segundo plano* em vez de girar
   infinitamente. Os chunks que chegam nesse periodo ficam em uma fila limitada, para nao
-  acumular memoria.
+  acumular memoria; se a fila estourar, o fluxo chega quebrado e o app pede um epoch novo
+  ao transmissor para recomecar limpo.
 - **Quem compartilha ve a propria tela via previa local**, que nao passa pelo servidor
   (evita laco de video e nao consome banda do servidor).
 
@@ -241,6 +270,7 @@ public/
 scripts/
   selftest.mjs      teste do protocolo do servidor
   e2e.mjs           teste ponta a ponta em navegador (CDP)
+  e2e-real.mjs      teste com captura de tela real em dois navegadores
   lib/cdp.mjs       cliente CDP reutilizavel
 ```
 

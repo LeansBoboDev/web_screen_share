@@ -162,6 +162,45 @@ check(
   `placeholder oculto=${previewState.placeholderHidden}`
 );
 
+// Quando a captura para de produzir dados (janela minimizada, sistema
+// dormindo, troca de monitor), o transmissor precisa avisar: sem isso o
+// espectador so veria um video congelado, sem nenhuma explicacao.
+await evaluate(
+  cdp,
+  broadcaster.sessionId,
+  `Object.defineProperty(window.__wss.streamer, 'stalled', {
+     get: () => true, configurable: true
+   });
+   'ok';`
+);
+await sleep(1500);
+const stallWarn = await evaluate(
+  cdp,
+  broadcaster.sessionId,
+  `(() => {
+     const w = document.getElementById('broadcast-warning');
+     return { hidden: w.hidden, text: w.textContent };
+   })()`
+);
+check(
+  'transmissor avisa quando a captura para',
+  stallWarn.hidden === false && /captura parou/i.test(stallWarn.text),
+  JSON.stringify(stallWarn)
+);
+
+await evaluate(
+  cdp,
+  broadcaster.sessionId,
+  `delete window.__wss.streamer.stalled; 'ok';`
+);
+await sleep(1500);
+const stallWarnOff = await evaluate(
+  cdp,
+  broadcaster.sessionId,
+  `document.getElementById('broadcast-warning').hidden`
+);
+check('aviso de captura parada some quando o fluxo volta', stallWarnOff === true);
+
 // -- terceira aba: entra DEPOIS do inicio da transmissao -------------------
 const late = await newPage(cdp, url);
 await sleep(600);
@@ -322,6 +361,27 @@ check('antigo transmissor passa a ver a nova transmissao', demotedWidth > 0, `vi
 const lateStillLive = await waitForVideo(late.sessionId, 15000);
 check('espectador tardio continuaRecebendo apos o takeover', lateStillLive > 0, `videoWidth=${lateStillLive}`);
 
+// -- botao "Reconectar video": nao pode travar o espectador -----------------
+const beforeRetry = await evaluate(cdp, late.sessionId, `window.__wss.player.epoch`);
+await evaluate(cdp, late.sessionId, `document.getElementById('btn-retry').click(); 'ok';`);
+await sleep(3000);
+const afterRetry = await evaluate(
+  cdp,
+  late.sessionId,
+  `(() => ({
+     placeholder: document.getElementById('placeholder').hidden
+       ? null
+       : document.getElementById('placeholder-title').textContent,
+     epoch: window.__wss.player.epoch,
+     retrying: window.__wss.state.retrying
+   }))()`
+);
+check(
+  'reconectar video nao trava o espectador',
+  afterRetry.placeholder === null && afterRetry.epoch > beforeRetry && afterRetry.retrying === false,
+  JSON.stringify(afterRetry)
+);
+
 // -- sala vazia: o espectador espera, mas a tela explica a espera ------------
 const empty = await newPage(cdp, `${SITE}/?room=vazio${Date.now().toString(36).slice(-4)}`);
 await sleep(1200);
@@ -349,6 +409,26 @@ check('sala sem transmissor mostra o botao de compartilhar', await evaluate(
   empty.sessionId,
   `document.getElementById('watch-panel').hidden === false`
 ));
+
+// Reconectar sem ninguem transmitindo nao pode deixar o texto "Reconectando..."
+// preso na tela.
+await evaluate(cdp, empty.sessionId, `document.getElementById('btn-retry').click(); 'ok';`);
+await sleep(1500);
+const emptyRetry = await evaluate(
+  cdp,
+  empty.sessionId,
+  `(() => ({
+     placeholder: document.getElementById('placeholder').hidden
+       ? null
+       : document.getElementById('placeholder-title').textContent,
+     retrying: window.__wss.state.retrying
+   }))()`
+);
+check(
+  'reconectar sem transmissor nao fica em "Reconectando..."',
+  /ninguem/i.test(emptyRetry.placeholder ?? '') && emptyRetry.retrying === false,
+  JSON.stringify(emptyRetry)
+);
 
 // -- erros de console/excecoes ---------------------------------------------
 const relevantErrors = errors.filter((e) => !e.includes('favicon'));

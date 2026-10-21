@@ -66,6 +66,7 @@ const DUMP = `
     mime: window.__wss.state.mimeType,
     recording: window.__wss.streamer.isRecording,
     bytes: window.__wss.player.bytes,
+    dropped: window.__wss.player.dropped,
     msState: window.__wss.player.mediaSource ? window.__wss.player.mediaSource.readyState : null
   }))()
 `;
@@ -96,10 +97,15 @@ await evaluate(
 );
 await sleep(3000);
 await bringToFront(B.cdp, tabB.sessionId);
-await sleep(3000);
 
-const b1 = await evaluate(B.cdp, tabB.sessionId, DUMP);
-check('espectador decodifica a midia real', b1.videoW > 0 && b1.videoReady >= 2, `videoWidth=${b1.videoW}`);
+// Espera aparecer um frame de verdade (readyState >= 2), nao so as dimensoes.
+let b1 = await evaluate(B.cdp, tabB.sessionId, DUMP);
+for (let i = 0; i < 20 && b1.videoReady < 2; i += 1) {
+  await sleep(500);
+  b1 = await evaluate(B.cdp, tabB.sessionId, DUMP);
+}
+
+check('espectador decodifica a midia real', b1.videoW > 0 && b1.videoReady >= 2, `videoWidth=${b1.videoW} readyState=${b1.videoReady}`);
 check('espectador recebeu bytes pelo servidor', b1.bytes > 0, `bytes=${b1.bytes}`);
 check('MediaSource do espectador esta aberto', b1.msState === 'open', `ms=${b1.msState}`);
 check('espectador marcado como AO VIVO', b1.pill.includes('AO VIVO'), b1.pill);
@@ -110,6 +116,11 @@ const url2 = `${SITE}/?room=${room2}`;
 const tabA2 = await newPage(A.cdp, url2);
 const tabB2 = await newPage(B.cdp, url2);
 await sleep(1500);
+
+// Garante que a aba do espectador 2 fique em segundo plano (a aba 1 do
+// navegador B continua em primeiro plano).
+await bringToFront(B.cdp, tabB.sessionId);
+await sleep(500);
 
 await evaluate(
   B.cdp,
@@ -130,11 +141,37 @@ await evaluate(
    'ok';`
 );
 await sleep(4000);
-await bringToFront(B.cdp, tabB2.sessionId);
-await sleep(3000);
 
-const b2 = await evaluate(B.cdp, tabB2.sessionId, DUMP);
-check('espectador que entrou antes recebe a imagem', b2.videoW > 0, `videoWidth=${b2.videoW}`);
+// A aba do espectador fica em segundo plano por ~20 s. O Chrome adia a
+// abertura do MediaSource, a fila de chunks estoura e o fluxo chega
+// quebrado: e exatamente o cenario que deixava o video preso em
+// "carregando" para sempre.
+await sleep(20000);
+const hidden = await evaluate(B.cdp, tabB2.sessionId, DUMP);
+check(
+  'aba oculta avisa que o video fica pausado',
+  /segundo plano/i.test(hidden.placeholder ?? ''),
+  `placeholder=${hidden.placeholder}`
+);
+check(
+  'fila de chunks estoura com a aba oculta (fluxo quebrado)',
+  hidden.dropped > 0,
+  `dropped=${hidden.dropped}`
+);
+
+await bringToFront(B.cdp, tabB2.sessionId);
+
+let b2 = await evaluate(B.cdp, tabB2.sessionId, DUMP);
+for (let i = 0; i < 40 && b2.videoReady < 2; i += 1) {
+  await sleep(500);
+  b2 = await evaluate(B.cdp, tabB2.sessionId, DUMP);
+}
+check('espectador que entrou antes recebe a imagem', b2.videoW > 0 && b2.videoReady >= 2, `videoWidth=${b2.videoW} readyState=${b2.videoReady}`);
+check(
+  'espectador se recupera sozinho depois de esconder a aba',
+  b2.videoReady >= 2 && b2.placeholder === null,
+  `readyState=${b2.videoReady} placeholder=${b2.placeholder}`
+);
 
 const relevantErrors = errors.filter((e) => !e.includes('favicon'));
 check('nenhuma excecao de JS nos navegadores', relevantErrors.length === 0, relevantErrors.join(' | '));

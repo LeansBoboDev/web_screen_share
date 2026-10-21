@@ -562,6 +562,18 @@ body {
   flex-wrap: wrap;
 }
 
+.panel__warning {
+  flex: 1 1 100%;
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 196, 84, 0.12);
+  border: 1px solid rgba(255, 196, 84, 0.35);
+  color: #ffd88a;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
 .badge {
   display: inline-block;
   min-width: 20px;
