@@ -25,6 +25,13 @@
 const MAX_QUEUE = 60; // ~15 s de chunks (4 por segundo)
 const STALL_MS = 6000; // buffer parado por isso => fluxo quebrado
 
+// Folga de buffer (segundos) antes de tocar. Tocar colado no fim do buffer
+// faz qualquer atraso da rede (Wi-Fi) esvaziar o buffer: no video isso passa
+// despercebido, mas o audio chega picotado, com estalos e chiado.
+const START_BUFFER = 0.8;
+// Ficou mais atrasado que isso em relacao ao ao vivo: pula para perto do fim.
+const MAX_LAG = 3;
+
 export class Player extends EventTarget {
   constructor(video) {
     super();
@@ -219,14 +226,34 @@ export class Player extends EventTarget {
     previous.replaceWith(fresh);
     this.video = fresh;
 
+    this.video.addEventListener('waiting', this._onWaiting);
     this.video.src = this.objectUrl;
     this.dispatchEvent(new Event('element'));
   }
 
   _onUpdateEnd = () => {
     this.updateEnd += 1;
+    this._play();
     this._drain();
   };
+
+  /**
+   * O buffer esvaziou durante a reproducao. Sem pausar, o navegador volta a
+   * tocar assim que chega o proximo pedacinho e esvazia de novo em seguida
+   * (audio picotado). Pausando, `_play()` so retoma com a folga refeita.
+   */
+  _onWaiting = (event) => {
+    if (event.target !== this.video || this.video.ended) return;
+    this.video.pause();
+  };
+
+  /** Quantos segundos de midia ha no buffer a frente da posicao atual. */
+  _ahead() {
+    const buffered = this.video.buffered;
+    if (!buffered.length) return { ahead: 0, end: 0 };
+    const end = buffered.end(buffered.length - 1);
+    return { ahead: end - this.video.currentTime, end };
+  }
 
   _onBufferError = () => {
     this.bufferError = 'Erro no buffer de midia.';
@@ -255,7 +282,6 @@ export class Player extends EventTarget {
     try {
       buffer.appendBuffer(chunk);
       this.appended += 1;
-      this._play();
     } catch (err) {
       if (err?.name === 'QuotaExceededError') {
         // Buffer cheio: descarta o conteudo antigo e segue.
@@ -272,7 +298,11 @@ export class Player extends EventTarget {
   }
 
   _play() {
-    if (this.video.paused) {
+    const { ahead, end } = this._ahead();
+    if (ahead > MAX_LAG) {
+      this.video.currentTime = end - START_BUFFER;
+    }
+    if (this.video.paused && ahead >= START_BUFFER) {
       const promise = this.video.play();
       if (promise?.catch) {
         promise

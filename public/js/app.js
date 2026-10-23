@@ -439,7 +439,7 @@ el.btnChangeSource.addEventListener('click', changeSource);
 el.ctlMic.addEventListener('change', async () => {
   if (state.role !== 'broadcaster') return;
   if (el.ctlMic.checked) {
-    const hadAudio = streamer.hasAudioTrack();
+    const audioBefore = streamer.recordAudioTrack();
     try {
       await streamer.enableMic();
     } catch {
@@ -447,8 +447,9 @@ el.ctlMic.addEventListener('change', async () => {
       flash('Nao foi possivel acessar o microfone.');
       return;
     }
-    if (!hadAudio) {
-      // A track de audio entrou depois: o gravador precisa ser refeito.
+    if (streamer.recordAudioTrack() !== audioBefore) {
+      // A track de audio gravada mudou (entrou o microfone ou a mixagem):
+      // o gravador precisa ser refeito.
       streamer.restart();
     }
   } else {

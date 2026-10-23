@@ -119,9 +119,6 @@ export class Streamer extends EventTarget {
     this.systemTrack = display.getAudioTracks()[0] ?? null;
     if (this.systemTrack) this.systemTrack.enabled = false; // o usuario liga depois
 
-    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    this.dest = this.ctx.createMediaStreamDestination();
-    if (this.systemTrack) this._connect(this.systemTrack);
     if (wantMic) {
       try {
         await this.enableMic();
@@ -138,24 +135,52 @@ export class Streamer extends EventTarget {
     return this.mimeType;
   }
 
-  _connect(track) {
-    if (!this.ctx || !this.dest) return;
-    try {
-      const source = this.ctx.createMediaStreamSource(new MediaStream([track]));
-      source.connect(this.dest);
-    } catch (err) {
-      console.warn('[streamer] falha ao conectar audio', err);
+  /**
+   * Track de audio que vai para o gravador.
+   *
+   * Com uma unica fonte a track vai direto para o MediaRecorder. Passar pelo
+   * Web Audio sem necessidade reamostra o audio na taxa do dispositivo de
+   * saida do sistema; com um headset Bluetooth em modo chamada (HFP) isso
+   * e 16 kHz ou menos e o audio chega com som de radio.
+   */
+  recordAudioTrack() {
+    const sources = [this.systemTrack, this.micTrack].filter(Boolean);
+    if (sources.length <= 1) return sources[0] ?? null;
+    return this._mix(sources) ?? sources[0];
+  }
+
+  /** Mistura audio do sistema e microfone em 48 kHz (taxa nativa do Opus). */
+  _mix(sources) {
+    if (this.dest) return this.dest.stream.getAudioTracks()[0] ?? null;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    // Alguns navegadores recusam ligar uma track a um contexto com taxa
+    // diferente da dela: nesse caso tenta de novo com a taxa padrao.
+    for (const options of [{ sampleRate: 48_000 }, undefined]) {
+      let ctx = null;
+      try {
+        ctx = new AudioCtx(options);
+        const dest = ctx.createMediaStreamDestination();
+        for (const track of sources) {
+          ctx.createMediaStreamSource(new MediaStream([track])).connect(dest);
+        }
+        ctx.resume?.().catch(() => {});
+        this.ctx = ctx;
+        this.dest = dest;
+        return dest.stream.getAudioTracks()[0] ?? null;
+      } catch (err) {
+        console.warn('[streamer] falha ao mixar audio', err);
+        ctx?.close?.().catch(() => {});
+      }
     }
+    return null;
   }
 
   // ---------------------------------------------------------- gravacao
 
   _buildStream() {
     const tracks = this.videoTracks.filter(Boolean);
-    if (this.dest && (this.systemTrack || this.micTrack)) {
-      const destTrack = this.dest.stream.getAudioTracks()[0];
-      if (destTrack) tracks.push(destTrack);
-    }
+    const audio = this.recordAudioTrack();
+    if (audio) tracks.push(audio);
     return new MediaStream(tracks);
   }
 
@@ -255,7 +280,6 @@ export class Streamer extends EventTarget {
     });
     this.micTrack = micStream.getAudioTracks()[0];
     this.micTrack.enabled = true;
-    this._connect(this.micTrack);
     return true;
   }
 
