@@ -27,9 +27,11 @@ function log(...args) {
 }
 
 export class RoomManager {
-  constructor() {
+  /** @param {{version?: string}} options */
+  constructor({ version = null } = {}) {
     /** @type {Map<string, Room>} */
     this.rooms = new Map();
+    this.version = version; // o navegador compara com a versao da pagina
     this.timer = setInterval(() => this.heartbeat(), HEARTBEAT_MS);
     this.timer.unref?.();
   }
@@ -144,6 +146,7 @@ export class RoomManager {
         : null,
       epoch: room.epoch,
       mimeType: room.mimeType,
+      version: this.version,
       ts: Date.now(),
     });
 
@@ -262,7 +265,8 @@ export class RoomManager {
 
     const time = new Date(now).toLocaleTimeString('pt-BR');
     const who = `[${time}] [sala ${ws.meta.roomId}] "${ws.meta.name}"`;
-    const tab = msg.visible === false ? ', ABA OCULTA' : '';
+    const stale = this.version && msg.version !== this.version ? ', PAGINA DESATUALIZADA' : '';
+    const tab = (msg.visible === false ? ', ABA OCULTA' : '') + stale;
 
     if (msg.role === 'broadcaster') {
       const a = msg.audio && typeof msg.audio === 'object' ? msg.audio : null;

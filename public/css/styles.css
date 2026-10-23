@@ -744,3 +744,23 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Selo de versao (canto inferior esquerdo): confirma que a pagina aberta e a
+   mesma versao que o servidor esta rodando. */
+.version {
+  position: fixed;
+  left: 8px;
+  bottom: 6px;
+  z-index: 50;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.version--stale {
+  color: var(--danger);
+  opacity: 1;
+  font-weight: 600;
+}

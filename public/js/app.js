@@ -1,6 +1,7 @@
 import { Net } from './net.js';
 import { Streamer } from './streamer.js';
 import { Player } from './player.js';
+import { VERSION } from './version.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -49,6 +50,7 @@ const el = {
   btnRetry: $('btn-retry'),
 
   stats: $('stats'),
+  version: $('version'),
   peerBadge: $('peer-badge'),
   peerList: $('peer-list'),
   chatList: $('chat-list'),
@@ -654,6 +656,7 @@ net.addEventListener('message', (event) => {
 function handleServerMessage(msg) {
   switch (msg.type) {
     case 'welcome': {
+      renderVersion(msg.version);
       net.metaId = msg.id;
       state.selfId = msg.id;
       state.peers = new Map((msg.peers ?? []).map((peer) => [peer.id, peer]));
@@ -974,6 +977,14 @@ setInterval(() => {
 // Contadores vao como diferenca desde o ultimo relatorio.
 const REPORT_MS = 5000;
 let lastReport = null;
+
+// Tambem mostra no console (F12), para quem nao tem acesso ao servidor.
+function sendReport(payload) {
+  payload.version = VERSION.id;
+  net.send(payload);
+  const time = new Date().toLocaleTimeString('pt-BR');
+  console.info(`[stats ${time}]`, JSON.stringify(payload));
+}
 setInterval(() => {
   if (el.room.hidden || net.state !== 'online') return;
   const now = performance.now();
@@ -985,7 +996,7 @@ setInterval(() => {
   if (state.role === 'broadcaster') {
     if (!streamer.isRecording) return;
     const s = streamer.stats();
-    net.send({
+    sendReport({
       type: 'stats',
       role: 'broadcaster',
       chunksPerSec: delta(s.chunks, 'chunks') / seconds,
@@ -1000,7 +1011,7 @@ setInterval(() => {
 
   if (!player.configured) return;
   const p = player.stats();
-  net.send({
+  sendReport({
     type: 'stats',
     role: 'viewer',
     ahead: p.ahead,
@@ -1027,7 +1038,21 @@ setInterval(() => {
   };
 }, REPORT_MS);
 
+/**
+ * Mostra a versao da pagina. Se o servidor (a cada conexao/reconexao) disser
+ * que esta rodando outra versao, a pagina aberta esta desatualizada.
+ */
+function renderVersion(serverVersion = VERSION.id) {
+  const stale = serverVersion != null && serverVersion !== VERSION.id;
+  el.version.textContent = stale
+    ? `versao ${VERSION.label} desatualizada - recarregue (Ctrl+F5)`
+    : `versao ${VERSION.label}`;
+  el.version.title = `pagina ${VERSION.id} / servidor ${serverVersion ?? '?'}`;
+  el.version.classList.toggle('version--stale', stale);
+}
+
 // ------------------------------------------------------------------- boot
+renderVersion();
 
 // Hook de depuracao (console do navegador): window.__wss.state / .player / .streamer
 window.__wss = { state, player, streamer, net };

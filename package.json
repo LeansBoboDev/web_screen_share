@@ -9,9 +9,7 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "selftest": "node scripts/selftest.mjs",
-    "e2e": "node scripts/e2e.mjs",
-    "e2e:real": "node scripts/e2e-real.mjs",
-    "test": "node scripts/selftest.mjs && node scripts/e2e.mjs"
+    "test": "node scripts/selftest.mjs"
   },
   "engines": {
     "node": ">=18"

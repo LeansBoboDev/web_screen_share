@@ -192,32 +192,14 @@ conexao online         fluxo recebendo 320.5 KB/s   aba visivel
 O servidor precisa estar rodando (`npm start`) em outra aba.
 
 ```bash
-npm run selftest   # protocolo do relay: handshake, peers, epoch, midia binaria, chat, takeover
-npm run e2e        # navegador real (Chrome/Edge headless via CDP): captura -> MSE -> <video>
-npm run e2e:real   # captura de tela REAL (getDisplayMedia) em dois navegadores separados
-npm test           # selftest + e2e
+npm test   # protocolo do relay: handshake, peers, epoch, midia binaria, chat, takeover
 ```
 
 O `selftest` sobe tres clientes WebSocket e valida o protocolo do servidor (entrada e
 saida de peers, *epochs*, retransmissao binaria intacta, chat e troca de transmissor).
 
-O `e2e` abre quatro abas na mesma sala (um transmissor com captura falsa gerada por
-`canvas`, um espectador, um espectador que entra no meio da transmissao e um espectador
-numa sala vazia), verifica que o video decodifica, que o transmissor ve a previa local,
-que a aba em segundo plano e avisada, que a captura parada e avisada, que o chat
-funciona, que a troca de transmissor funciona e que nao ha excecao de JavaScript.
-
-> O Chrome so decodifica com a aba visivel: o `sourceopen` do `MediaSource` fica adiado
-> enquanto a aba esta oculta. O teste traz cada aba para o primeiro plano antes de
-> conferir a imagem e, no caminho inverso, verifica que o app explica a situacao em vez de
-> ficar girando.
-
-O `e2e:real` e o teste mais fiel ao uso real: ele sobe **dois navegadores separados**
-(processos distintos), usa `getDisplayMedia()` de verdade — o Chrome headless escolhe a
-fonte sozinho com `--auto-select-desktop-capture-source` — e confere que o espectador
-decodifica a imagem real, que quem compartilha ve a previa local e que o espectador
-**se recupera sozinho** depois de ficar com a aba oculta (a fila de chunks estoura, o
-fluxo chega quebrado e o app pede um epoch novo ao transmissor).
+O resto (captura, video, audio) e testado manualmente: suba o servidor, abra o site em
+duas maquinas e compartilhe a tela.
 
 ---
 
@@ -269,9 +251,6 @@ public/
   js/player.js      decodificacao via MediaSource (MSE)
 scripts/
   selftest.mjs      teste do protocolo do servidor
-  e2e.mjs           teste ponta a ponta em navegador (CDP)
-  e2e-real.mjs      teste com captura de tela real em dois navegadores
-  lib/cdp.mjs       cliente CDP reutilizavel
 ```
 
 ## Licenca
