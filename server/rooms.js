@@ -113,6 +113,8 @@ export class RoomManager {
         return this.requestInit(ws);
       case 'ping':
         return this.send(ws, { type: 'pong', ts: Date.now() });
+      case 'stats':
+        return this.logStats(ws, msg);
       default:
         return this.fail(ws, `Tipo de mensagem desconhecido: ${msg.type}`);
     }
@@ -246,6 +248,46 @@ export class RoomManager {
     });
   }
 
+  /**
+   * Relatorio periodico de diagnostico enviado pelos navegadores.
+   * Espectador: "pausas" > 0 significa que o buffer esvaziou (rede nao deu
+   * vazao) e o audio foi cortado. Transmissor: "pendente" crescendo indica
+   * upload insuficiente.
+   */
+  logStats(ws, msg) {
+    if (!ws.meta.roomId) return;
+    const now = Date.now();
+    if (now - (ws.meta.lastStatsAt ?? 0) < 1000) return; // limita abuso
+    ws.meta.lastStatsAt = now;
+
+    const time = new Date(now).toLocaleTimeString('pt-BR');
+    const who = `[${time}] [sala ${ws.meta.roomId}] "${ws.meta.name}"`;
+    const tab = msg.visible === false ? ', ABA OCULTA' : '';
+
+    if (msg.role === 'broadcaster') {
+      const a = msg.audio && typeof msg.audio === 'object' ? msg.audio : null;
+      const audio = a
+        ? `audio ${text(a.source)} ${num(a.sampleRate, 0)}Hz ${num(a.channels, 0)}ch` +
+          ` (sistema ${onOff(a.system)}, mic ${onOff(a.mic)})`
+        : 'sem audio';
+      log(
+        `${who} transmissor: ${audio}, ${num(msg.chunksPerSec, 1)} chunks/s,` +
+          ` ${kb(msg.bytesPerSec)}/s, pendente ${kb(msg.pendingBytes)}${tab}`
+      );
+      return;
+    }
+
+    const audioRate = msg.audioBytesPerSec == null ? '' : `, audio ${kb(msg.audioBytesPerSec)}/s`;
+    const alert = num(msg.rebuffers, 0) > 0 ? '  <-- BUFFER ESVAZIOU' : '';
+    log(
+      `${who} espectador: buffer ${num(msg.ahead, 2)}s${msg.paused ? ' (pausado)' : ''},` +
+        ` pausas ${num(msg.rebuffers, 0)} (total ${num(msg.rebuffersTotal, 0)}),` +
+        ` saltos ${num(msg.jumps, 0)}, ${num(msg.chunksPerSec, 1)} chunks/s,` +
+        ` ${kb(msg.bytesPerSec)}/s${audioRate}, fila ${num(msg.queued, 0)},` +
+        ` descartados ${num(msg.dropped, 0)}, quadros perdidos ${num(msg.droppedFrames, 0)}${tab}${alert}`
+    );
+  }
+
   // ------------------------------------------------------------------- midia
 
   relayMedia(ws, data) {
@@ -339,6 +381,27 @@ export class RoomManager {
     }
     clearInterval(this.timer);
   }
+}
+
+// Formatadores do log de stats: os valores vem do navegador, entao tudo e
+// convertido/limitado antes de ir para o terminal.
+function num(value, digits) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : '?';
+}
+
+function kb(bytes) {
+  const n = Number(bytes);
+  return Number.isFinite(n) ? `${(n / 1024).toFixed(1)} KB` : '?';
+}
+
+function text(value) {
+  return String(value ?? '?').replace(/[^\w-]/g, '').slice(0, 20) || '?';
+}
+
+function onOff(value) {
+  if (value == null) return '-';
+  return value ? 'on' : 'off';
 }
 
 function sanitizeName(name) {

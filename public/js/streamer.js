@@ -295,6 +295,29 @@ export class Streamer extends EventTarget {
     return Boolean(this.systemTrack || this.micTrack);
   }
 
+  /** Retrato da captura/gravacao, para o log do servidor. */
+  stats() {
+    const track = this.recordStream?.getAudioTracks()[0] ?? null;
+    let source = null;
+    if (track && track === this.systemTrack) source = 'sistema';
+    else if (track && track === this.micTrack) source = 'microfone';
+    else if (track) source = 'mixagem';
+    const settings = track?.getSettings?.() ?? {};
+    return {
+      recording: this.isRecording,
+      mimeType: this.mimeType,
+      chunks: this.chunks,
+      audio: source && {
+        source,
+        // Na mixagem a taxa que vale e a do AudioContext.
+        sampleRate: source === 'mixagem' ? (this.ctx?.sampleRate ?? null) : (settings.sampleRate ?? null),
+        channels: settings.channelCount ?? null,
+        system: this.systemTrack ? this.systemTrack.enabled : null,
+        mic: this.micTrack ? this.micTrack.enabled : null,
+      },
+    };
+  }
+
   // -------------------------------------------------------------- parar
 
   stop() {

@@ -969,6 +969,64 @@ setInterval(() => {
   renderBroadcastWarning();
 }, 1000);
 
+// Relatorio periodico para o log do servidor: permite ver se o audio do
+// espectador picota por falta de buffer (rede) ou se o fluxo chega inteiro.
+// Contadores vao como diferenca desde o ultimo relatorio.
+const REPORT_MS = 5000;
+let lastReport = null;
+setInterval(() => {
+  if (el.room.hidden || net.state !== 'online') return;
+  const now = performance.now();
+  const prev = lastReport?.role === state.role ? lastReport : null;
+  const seconds = prev ? (now - prev.at) / 1000 : REPORT_MS / 1000;
+  // Contador menor que o anterior = foi zerado (nova epoch): conta do zero.
+  const delta = (value, key) => (!prev ? 0 : value >= prev[key] ? value - prev[key] : value);
+
+  if (state.role === 'broadcaster') {
+    if (!streamer.isRecording) return;
+    const s = streamer.stats();
+    net.send({
+      type: 'stats',
+      role: 'broadcaster',
+      chunksPerSec: delta(s.chunks, 'chunks') / seconds,
+      bytesPerSec: delta(state.sentBytes, 'bytes') / seconds,
+      pendingBytes: net.buffered,
+      audio: s.audio,
+      visible: document.visibilityState === 'visible',
+    });
+    lastReport = { role: state.role, at: now, chunks: s.chunks, bytes: state.sentBytes };
+    return;
+  }
+
+  if (!player.configured) return;
+  const p = player.stats();
+  net.send({
+    type: 'stats',
+    role: 'viewer',
+    ahead: p.ahead,
+    paused: p.paused,
+    rebuffers: delta(p.rebuffers, 'rebuffers'),
+    rebuffersTotal: p.rebuffers,
+    jumps: delta(p.jumps, 'jumps'),
+    chunksPerSec: delta(p.appended, 'appended') / seconds,
+    bytesPerSec: delta(player.bytes, 'bytes') / seconds,
+    audioBytesPerSec: p.audioBytes == null ? null : delta(p.audioBytes, 'audioBytes') / seconds,
+    queued: p.queued,
+    dropped: p.dropped,
+    droppedFrames: p.droppedFrames,
+    visible: document.visibilityState === 'visible',
+  });
+  lastReport = {
+    role: state.role,
+    at: now,
+    rebuffers: p.rebuffers,
+    jumps: p.jumps,
+    appended: p.appended,
+    bytes: player.bytes,
+    audioBytes: p.audioBytes ?? 0,
+  };
+}, REPORT_MS);
+
 // ------------------------------------------------------------------- boot
 
 // Hook de depuracao (console do navegador): window.__wss.state / .player / .streamer

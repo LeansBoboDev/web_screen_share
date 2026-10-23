@@ -90,6 +90,11 @@ export class Net extends EventTarget {
     else this.outbox.push(raw);
   }
 
+  /** Bytes ainda na fila de envio do socket (rede nao esta dando vazao). */
+  get buffered() {
+    return this.ws?.bufferedAmount ?? 0;
+  }
+
   /** Envia um frame binario de midia (descarta se offline). */
   sendBinary(buffer) {
     if (this.ws && this.ws.readyState === 1 && this.ws.bufferedAmount < 8 * 1024 * 1024) {

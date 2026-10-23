@@ -53,6 +53,28 @@ export class Player extends EventTarget {
     this.bufferError = null;
     this.lastBufferedEnd = 0;
     this.lastProgressAt = 0;
+    // Diagnostico de reproducao (acumulados, nao zeram entre epochs):
+    // pausas para reencher o buffer e saltos para alcancar o ao vivo.
+    this.rebuffers = 0;
+    this.jumps = 0;
+  }
+
+  /** Retrato do estado da reproducao, para o log do servidor. */
+  stats() {
+    const { ahead } = this._ahead();
+    const quality = this.video.getVideoPlaybackQuality?.();
+    return {
+      ahead: Math.max(0, ahead),
+      paused: this.video.paused,
+      appended: this.appended,
+      queued: this.queue.length,
+      dropped: this.dropped,
+      rebuffers: this.rebuffers,
+      jumps: this.jumps,
+      droppedFrames: quality?.droppedVideoFrames ?? null,
+      // So existe no Chrome: bytes de audio que chegaram ao decodificador.
+      audioBytes: this.video.webkitAudioDecodedByteCount ?? null,
+    };
   }
 
   /**
@@ -244,6 +266,7 @@ export class Player extends EventTarget {
    */
   _onWaiting = (event) => {
     if (event.target !== this.video || this.video.ended) return;
+    this.rebuffers += 1;
     this.video.pause();
   };
 
@@ -300,6 +323,7 @@ export class Player extends EventTarget {
   _play() {
     const { ahead, end } = this._ahead();
     if (ahead > MAX_LAG) {
+      this.jumps += 1;
       this.video.currentTime = end - START_BUFFER;
     }
     if (this.video.paused && ahead >= START_BUFFER) {
